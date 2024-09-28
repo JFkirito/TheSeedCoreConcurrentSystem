@@ -48,7 +48,7 @@
 ## 注意事项
 
 - **ConnectConcurrentSystem**：系统初始化方法，必须在 `if __name__ == "__main__"` 中调用。
-- **Qt模式**：如果需要兼容Qt，请在实例 `QtWidgets.QApplication` 后再调用 `ConnectConcurrentSystem`。
+- **Qt模式**：如果需要兼容Qt，请务必安装 `qasync` 库并且在实例 `QtWidgets.QApplication` 后再调用 `ConnectConcurrentSystem`。
 - **主事件循环**：调用 `ConnectConcurrentSystem` 后，系统会自动创建事件循环，你可以在主进程中调用 `ConcurrentSystem.MainEventLoop` 来操作主事件循环。
 - **`ConcurrentSystem.MainEventLoop`**：主事件循环等价于普通的 `asyncio.AbstractEventLoop` 对象，可以使用 `run_until_complete`、`run_forever`、`creat_task` 等方法。
 - **任务可序列化**：提交的进程任务函数和参数必须是可序列化的，以确保任务能够在进程间传递。
@@ -68,6 +68,11 @@
 
 - Python 3.8 或更高版本：系统的某些依赖库（如 asyncio、concurrent.futures 等）需要 Python 3.8 及以上的版本支持。
 - 建议使用3.11及以上版本，以获得更好的性能和稳定性。
+
+### 可选依赖
+
+1. **qasync**：用于在 Qt 事件循环中运行异步任务，如果需要兼容Qt，必须安装此库。
+2. **PyTorch**：用于 GPU 加速计算密集型任务。
 
 ## 示例
 
