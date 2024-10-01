@@ -3653,7 +3653,7 @@ class _LoadBalancer(threading.Thread):
         while not self.CloseEvent.is_set():
             self._updateProcessStatus()
             await self._expandPolicyExecutor()
-            self._shrinkagePolicyExecutor()
+            await self._shrinkagePolicyExecutor()
             await asyncio.sleep(0.001)
             rest_times += 0.001
             if rest_times >= 60000:
@@ -3838,7 +3838,7 @@ class _LoadBalancer(threading.Thread):
         expand_method = policy_method[self.ConfigManager.ExpandPolicy.value]
         await expand_method()
 
-    def _noExpand(self):
+    async def _noExpand(self):
         """No expansion policy method."""
         pass
 
@@ -3883,7 +3883,7 @@ class _LoadBalancer(threading.Thread):
             else:
                 self.Logger.debug(f"Load reaches {int(ideal_load_per_thread)}%, but unable to expand more thread")
 
-    def _beforehandExpand(self):
+    async def _beforehandExpand(self):
         """
         Expands processes and threads proactively based on the number of pending tasks.
 
@@ -4041,7 +4041,7 @@ class _LoadBalancer(threading.Thread):
                 return basic_id
             basic_id = f"{expand_type}-{int(basic_id.split('-')[-1]) + 1}"
 
-    def _shrinkagePolicyExecutor(self):
+    async def _shrinkagePolicyExecutor(self):
         """
         Executes the appropriate shrinkage policy based on the current configuration.
 
@@ -4066,13 +4066,13 @@ class _LoadBalancer(threading.Thread):
             "TimeoutShrink": self._timeoutShrink,
         }
         shrink_method = policy_method[self.ConfigManager.ShrinkagePolicy.value]
-        shrink_method()
+        await shrink_method()
 
-    def _noShrink(self):
+    async def _noShrink(self):
         """No shrinkage policy method."""
         pass
 
-    def _autoShrink(self):
+    async def _autoShrink(self):
         """
         Automatically shrinks the number of expand processes and threads based on their activity levels.
 
@@ -4119,7 +4119,7 @@ class _LoadBalancer(threading.Thread):
                 del _ExpandThreadSurvivalTime[obj.ThreadName]
                 self.Logger.debug(f"{obj.ThreadName} has been closed due to idle status.")
 
-    def _timeoutShrink(self):
+    async def _timeoutShrink(self):
         """
         Handles the shrinking of expand processes and threads based on a timeout policy.
 
