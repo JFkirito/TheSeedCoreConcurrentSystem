@@ -3912,11 +3912,11 @@ class _LoadBalancer(threading.Thread):
         core_thread_pending_task_count = sum([task_count for _, task_count in self.SynchronizationManager.CoreThreadStatusPool.values()])
         if (core_process_pending_task_count + core_thread_pending_task_count) >= self.ConfigManager.GlobalTaskThreshold.value * 0.8:
             if self._isAllowExpansion("Process"):
-                self._expandProcess()
+                await self._expandProcess()
             else:
                 self.Logger.debug(f"Pending task count reaches {self.ConfigManager.GlobalTaskThreshold.value}, but unable to expand more process")
             if self._isAllowExpansion("Thread"):
-                self._expandThread()
+                await self._expandThread()
             else:
                 self.Logger.debug(f"Pending task count reaches {self.ConfigManager.GlobalTaskThreshold.value}, but unable to expand more thread")
 
