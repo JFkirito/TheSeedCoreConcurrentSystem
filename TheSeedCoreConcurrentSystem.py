@@ -160,7 +160,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from ctypes import wintypes
 from dataclasses import dataclass
-from typing import Any, Dict, Literal, Optional, TYPE_CHECKING, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING, Tuple, Union
 
 if TYPE_CHECKING:
     pass
@@ -172,6 +172,18 @@ PySide6Support: bool = False
 PyQt6Support: bool = False
 PyQt5Support: bool = False
 QtMode = False
+
+
+def _showBanner():
+    CYAN_BOLD = "\033[1m\033[36m"
+    RESET = "\033[0m"
+    print(CYAN_BOLD + "   ______                                                               __    _____                    __                   ")
+    print(CYAN_BOLD + "  / ____/  ____    ____   _____  __  __   _____   _____  ___    ____   / /_  / ___/   __  __   _____  / /_  ___    ____ ___ ")
+    print(CYAN_BOLD + " / /      / __ \\  / __ \\ / ___/ / / / /  / ___/  / ___/ / _ \\  / __ \\ / __/  \\__ \\   / / / /  / ___/ / __/ / _ \\  / __ `__ \\")
+    print(CYAN_BOLD + "/ /___   / /_/ / / / / // /__  / /_/ /  / /     / /    /  __/ / / / // /_   ___/ /  / /_/ /  (__  ) / /_  /  __/ / / / / / /")
+    print(CYAN_BOLD + "\\____/   \\____/ /_/ /_/ \\___/  \\__,_/  /_/     /_/     \\___/ /_/ /_/ \\__/  /____/   \\__, /  /____/  \\__/  \\___/ /_/ /_/ /_/ ")
+    print(CYAN_BOLD + "                                                                                   /____/                                  " + RESET)
+    print(CYAN_BOLD + f"MainProcess - {os.getpid()}" + RESET)
 
 
 def _checkDependencies() -> None:
@@ -997,6 +1009,25 @@ class _WindowsMonitor:
         """
         pass
 
+    class FileTime(ctypes.Structure):
+        """
+        Represents a file time structure used in Windows API.
+
+        This structure is used to represent time in the Windows API, specifically for file and system time representations.
+
+        Fields:
+            dwLowDateTime: The low-order part of the file time.
+            dwHighDateTime: The high-order part of the file time.
+
+        Notes:
+            - The file time is represented as a 64-bit value indicating the number of 100-nanosecond intervals since January 1, 1601 (UTC).
+            - This structure is typically used in various Windows API calls that deal with file timestamps.
+        """
+        _fields_ = [
+            ("dwLowDateTime", wintypes.DWORD),
+            ("dwHighDateTime", wintypes.DWORD),
+        ]
+
     class MemoryStatusEx(ctypes.Structure):
         """
         Represents the memory status of the system.
@@ -1246,42 +1277,28 @@ class _WindowsMonitor:
         return counter_value.doubleValue
 
     @classmethod
-    def processCpuUsage(cls, pid: int, interval: float = 1.0) -> int:
+    def processCpuUsage(cls, pid: int, interval: float = 0.001) -> int:
         """
-        Calculates the CPU usage of a specified process on Windows over a given interval.
+        Calculates the CPU usage percentage of a specified process.
 
-        This class method retrieves the CPU time used by the specified process and calculates its CPU usage percentage.
+        This method retrieves the CPU time consumed by a process over a specified interval and computes its CPU usage as a percentage of the total CPU time available during that interval.
 
-        :param pid: An integer representing the process ID for which to calculate CPU usage.
-        :param interval: A float representing the time interval (in seconds) over which to measure CPU usage (default is 1.0 seconds).
+        Steps:
+        1. Open the target process using its PID with appropriate access rights.
+        2. Retrieve the process times for kernel and user mode before sleeping for the specified interval.
+        3. Sleep for the given interval to allow the process to execute.
+        4. Retrieve the process times again after the interval.
+        5. Retrieve system-wide CPU times for both kernel and user modes before and after the interval.
+        6. Calculate the total CPU time used by the process and the total CPU time available during the interval.
+        7. Compute the CPU usage percentage based on the ratio of the process's CPU time to the total CPU time, adjusted for the number of active processors.
+        8. Return the calculated CPU usage, ensuring it is within the range of 0 to 100%.
 
-        :return: An integer representing the CPU usage percentage for the specified process.
+        Raises:
+            - RuntimeError if the WindowsMonitor is not initialized.
+            - OSError if there are errors in retrieving process or system times.
 
-        raises:
-            RuntimeError: If the WindowsMonitor class instance is not initialized.
-            OSError: If there are issues with opening the process or retrieving process times.
-
-        steps:
-            1. Check if the class-level instance (_INSTANCE) is initialized:
-                - If not, raise a RuntimeError indicating that the WindowsMonitor is not initialized.
-            2. Define constants for process access rights.
-            3. Attempt to open the process using OpenProcess with the specified access rights:
-                - If unsuccessful, retrieve the last error code and raise an OSError.
-            4. Create FILETIME structures for recording the kernel and user times at the start and end of the measurement.
-            5. Call `GetProcessTimes` to retrieve the initial kernel and user times for the process:
-                - If unsuccessful, retrieve the last error code and raise an OSError.
-            6. Sleep for the specified interval to allow for time to pass.
-            7. Call `GetProcessTimes` again to retrieve the final kernel and user times:
-                - If unsuccessful, retrieve the last error code and raise an OSError.
-            8. Calculate the total kernel and user time elapsed:
-                - Convert the FILETIME structures to elapsed time in 100-nanosecond intervals.
-            9. Calculate the total CPU usage percentage based on elapsed time and the number of active processor cores.
-            10. Return the calculated CPU usage percentage, ensuring it falls within the range of 0 to 100.
-            11. Ensure that the process handle is closed in the finally block to prevent resource leaks.
-
-        Notes:
-            - This method is crucial for monitoring the CPU consumption of individual processes on Windows.
-            - Proper error handling ensures that the function behaves predictably in case of issues during API calls.
+        Returns:
+            - An integer representing the CPU usage percentage of the process.
         """
 
         if not cls._INSTANCE:
@@ -1292,39 +1309,62 @@ class _WindowsMonitor:
         if not handle:
             error_code = ctypes.windll.kernel32.GetLastError()
             raise OSError(f"Failed to open process {pid}. Error code: {error_code}")
-        kernel_time_start = wintypes.FILETIME()
-        user_time_start = wintypes.FILETIME()
-        kernel_time_end = wintypes.FILETIME()
-        user_time_end = wintypes.FILETIME()
+        kernel_time_start = cls.FileTime()
+        user_time_start = cls.FileTime()
+        kernel_time_end = cls.FileTime()
+        user_time_end = cls.FileTime()
         try:
             result = ctypes.windll.kernel32.GetProcessTimes(
                 handle,
-                ctypes.byref(wintypes.FILETIME()),
-                ctypes.byref(wintypes.FILETIME()),
+                ctypes.byref(cls.FileTime()),
+                ctypes.byref(cls.FileTime()),
                 ctypes.byref(kernel_time_start),
                 ctypes.byref(user_time_start)
             )
             if not result:
                 error_code = ctypes.windll.kernel32.GetLastError()
                 raise OSError(f"Failed to get process times for start. Error code: {error_code}")
+            idle_time_start = cls.FileTime()
+            kernel_time_system_start = cls.FileTime()
+            user_time_system_start = cls.FileTime()
+            result = ctypes.windll.kernel32.GetSystemTimes(
+                ctypes.byref(idle_time_start),
+                ctypes.byref(kernel_time_system_start),
+                ctypes.byref(user_time_system_start)
+            )
+            if not result:
+                error_code = ctypes.windll.kernel32.GetLastError()
+                raise OSError(f"Failed to get system times. Error code: {error_code}")
             time.sleep(interval)
             result = ctypes.windll.kernel32.GetProcessTimes(
                 handle,
-                ctypes.byref(wintypes.FILETIME()),
-                ctypes.byref(wintypes.FILETIME()),
+                ctypes.byref(cls.FileTime()),
+                ctypes.byref(cls.FileTime()),
                 ctypes.byref(kernel_time_end),
                 ctypes.byref(user_time_end)
             )
             if not result:
                 error_code = ctypes.windll.kernel32.GetLastError()
                 raise OSError(f"Failed to get process times for end. Error code: {error_code}")
-            kernel_time_elapsed = (kernel_time_end.dwLowDateTime - kernel_time_start.dwLowDateTime) + \
-                                  (kernel_time_end.dwHighDateTime - kernel_time_start.dwHighDateTime) * (2 ** 32)
-            user_time_elapsed = (user_time_end.dwLowDateTime - user_time_start.dwLowDateTime) + \
-                                (user_time_end.dwHighDateTime - user_time_start.dwHighDateTime) * (2 ** 32)
-            total_time_elapsed = kernel_time_elapsed + user_time_elapsed
+            idle_time_end = cls.FileTime()
+            kernel_time_system_end = cls.FileTime()
+            user_time_system_end = cls.FileTime()
+            result = ctypes.windll.kernel32.GetSystemTimes(
+                ctypes.byref(idle_time_end),
+                ctypes.byref(kernel_time_system_end),
+                ctypes.byref(user_time_system_end)
+            )
+            if not result:
+                error_code = ctypes.windll.kernel32.GetLastError()
+                raise OSError(f"Failed to get system times. Error code: {error_code}")
+            process_kernel_elapsed = (kernel_time_end.dwLowDateTime + (kernel_time_end.dwHighDateTime << 32)) / 10 ** 7 - (kernel_time_start.dwLowDateTime + (kernel_time_start.dwHighDateTime << 32)) / 10 ** 7
+            process_user_elapsed = (user_time_end.dwLowDateTime + (user_time_end.dwHighDateTime << 32)) / 10 ** 7 - (user_time_start.dwLowDateTime + (user_time_start.dwHighDateTime << 32)) / 10 ** 7
+            process_total_elapsed = process_kernel_elapsed + process_user_elapsed
+            system_kernel_elapsed = (kernel_time_system_end.dwLowDateTime + (kernel_time_system_end.dwHighDateTime << 32)) / 10 ** 7 - (kernel_time_system_start.dwLowDateTime + (kernel_time_system_start.dwHighDateTime << 32)) / 10 ** 7
+            system_user_elapsed = (user_time_system_end.dwLowDateTime + (user_time_system_end.dwHighDateTime << 32)) / 10 ** 7 - (user_time_system_start.dwLowDateTime + (user_time_system_start.dwHighDateTime << 32)) / 10 ** 7
+            system_total_elapsed = system_kernel_elapsed + system_user_elapsed
             num_cores = ctypes.windll.kernel32.GetActiveProcessorCount(0)
-            cpu_usage_percentage = (total_time_elapsed / (interval * 10 ** 7 * num_cores)) * 100
+            cpu_usage_percentage = (process_total_elapsed / (system_total_elapsed * num_cores)) * 10000
             return max(0, min(int(cpu_usage_percentage), 100))
         finally:
             if handle:
@@ -1683,6 +1723,7 @@ class _ConcurrentSystemConfig:
     This class serves as a data structure for holding various configuration parameters related to process and thread management.
 
     Attributes:
+        Priority: Priority level for main processes (default is "NORMAL").
         CoreProcessCount: Number of core processes to be used (optional).
         CoreThreadCount: Number of core threads to be used (optional).
         MaximumProcessCount: Maximum allowable number of processes (optional).
@@ -1700,6 +1741,7 @@ class _ConcurrentSystemConfig:
         - Using `dataclass` simplifies the initialization and representation of configuration objects.
     """
 
+    Priority: Literal["IDLE", "BELOW_NORMAL", "NORMAL", "ABOVE_NORMAL", "HIGH", "REALTIME"] = "NORMAL"
     CoreProcessCount: Optional[int] = None
     CoreThreadCount: Optional[int] = None
     MaximumProcessCount: Optional[int] = None
@@ -1759,6 +1801,7 @@ class _ConfigManager:
         self.PhysicalCores = _Monitor.physicalCpuCores()
         self.DebugMode = DebugMode
         self.Logger = self._setLogger()
+        self.Priority = SharedObjectManager.Value("c", self._validatePriority(Config.Priority))
         self.CoreProcessCount = SharedObjectManager.Value("i", self._validateCoreProcessCount(Config.CoreProcessCount))
         self.CoreThreadCount = SharedObjectManager.Value("i", self._validateCoreThreadCount(Config.CoreThreadCount))
         self.MaximumProcessCount = SharedObjectManager.Value("i", self._validateMaximumProcessCount(Config.MaximumProcessCount))
@@ -1807,6 +1850,29 @@ class _ConfigManager:
 
         logger.addHandler(console_handler)
         return logger
+
+    def _validatePriority(self, priority: Literal["IDLE", "BELOW_NORMAL", "NORMAL", "ABOVE_NORMAL", "HIGH", "REALTIME"]) -> Literal["IDLE", "BELOW_NORMAL", "NORMAL", "ABOVE_NORMAL", "HIGH", "REALTIME"]:
+        """
+        Validates the main process priority level and returns a valid priority.
+
+        :param priority: A string representing the desired priority level.
+
+        :return: The validated priority level, which may be the provided value or a default.
+
+        steps:
+            1. Check if the provided priority is a valid value:
+                - If it is not a valid priority level, log a warning message and return the default value "NORMAL".
+            2. Return the provided priority level as is.
+
+        Notes:
+            - This method ensures that the priority level configuration is appropriate and within the allowed range.
+            - Proper logging provides visibility into potential misconfigurations and ensures that defaults are clearly communicated.
+        """
+
+        if priority not in ["IDLE", "BELOW_NORMAL", "NORMAL", "ABOVE_NORMAL", "HIGH", "REALTIME"]:
+            self.Logger.warning(f"Invalid priority level '{priority}'. Using default value 'NORMAL'.")
+            return "NORMAL"
+        return priority
 
     def _validateCoreProcessCount(self, core_process_count: Optional[int]) -> int:
         """
@@ -1903,30 +1969,33 @@ class _ConfigManager:
 
     def _validateMaximumProcessCount(self, maximum_process_count: Optional[int]) -> int:
         """
-        Validates the maximum process count and returns a valid integer.
+        Validates the maximum process count configuration.
+
+        This method checks the provided maximum process count against predefined rules and logs appropriate warnings if the count is invalid or out of expected bounds.
+        It returns a validated maximum process count.
 
         :param maximum_process_count: An optional integer representing the desired maximum process count.
 
-        :return: The validated maximum process count, which may be the provided value or a default.
+        :return: The validated maximum process count, which may be the provided value or a default value.
 
-        steps:
-            1. Set the default value for the maximum process count to the number of physical CPU cores (default_value).
-            2. Check if the provided maximum_process_count is None:
-                - If it is, log a warning indicating that the default value will be used and return the default value.
-            3. Check if the provided maximum_process_count is not an integer:
-                - If it is of an invalid type, log a warning message about the invalid type and return the default value.
-            4. Check if the provided maximum_process_count exceeds the number of physical CPU cores:
-                - If it does, log a warning and return the default value.
-            5. Check if the provided maximum_process_count is less than the current CoreProcessCount:
-                - If it is, log a warning and return the default value.
-            6. If the provided maximum_process_count is valid, return it as is.
+        Steps:
+        1. Define a default value for maximum process count, calculated as double the number of physical cores.
+        2. If `maximum_process_count` is None:
+           - Log a warning indicating that the maximum process count is not set and use the default value.
+           - Return the default value.
+        3. Check if `maximum_process_count` is not an integer:
+           - Log a warning indicating the invalid type and return the default value.
+        4. If `maximum_process_count` exceeds the default value:
+           - Log a warning stating that it exceeds the physical CPU cores and return the default value.
+        5. If `maximum_process_count` is less than the current core process count:
+           - Log a warning indicating that it is less than the core process count and return the default value.
+        6. Return the validated `maximum_process_count`.
 
-        Notes:
-            - This method ensures that the maximum process count configuration is appropriate based on the system's physical capabilities.
-            - Proper logging provides visibility into potential misconfigurations and ensures that defaults are clearly communicated.
+        Returns:
+            int: The validated maximum process count.
         """
 
-        default_value = self.PhysicalCores
+        default_value = self.PhysicalCores * 2
         if maximum_process_count is None:
             self.Logger.warning(f"Maximum process count not set, using default value: {default_value}.")
             return default_value
@@ -1935,7 +2004,7 @@ class _ConfigManager:
             self.Logger.warning(f"Invalid type for maximum process count '{maximum_process_count}'. Must be an integer; using default value: {default_value}.")
             return default_value
 
-        if maximum_process_count > self.PhysicalCores:
+        if maximum_process_count > default_value:
             self.Logger.warning(f"Maximum process count {maximum_process_count} exceeds the number of physical CPU cores ({self.PhysicalCores}). Using default value: {default_value}.")
             return default_value
 
@@ -2245,7 +2314,7 @@ class _ConfigManager:
         balanced_score = ((physical_cores / 128) + (total_memory / 3072)) / 2
 
         balanced_score_thresholds = [0.2, 0.4, 0.6, 0.8]
-        task_thresholds = [40, 80, 120, 160, 200]
+        task_thresholds = [10, 40, 70, 100, 130]
         for score_threshold, threshold in zip(balanced_score_thresholds, task_thresholds):
             if balanced_score <= score_threshold:
                 return threshold
@@ -2278,10 +2347,10 @@ class _SynchronizationManager:
     def __init__(self, SharedObjectManager: multiprocessing.Manager):
         # noinspection PyProtectedMember
         self.SharedObjectManagerID = SharedObjectManager._process.pid
-        self.CoreProcessStatusPool: Dict[str, Tuple[int, int, int]] = SharedObjectManager.dict()
-        self.ExpandProcessStatusPool: Dict[str, Tuple[int, int, int]] = SharedObjectManager.dict()
-        self.CoreThreadStatusPool: Dict[str, Tuple[int, int]] = SharedObjectManager.dict()
-        self.ExpandThreadStatusPool: Dict[str, Tuple[int, int]] = SharedObjectManager.dict()
+        self.CoreProcessStatusPool: Dict[str, List[int]] = SharedObjectManager.dict()
+        self.ExpandProcessStatusPool: Dict[str, List[int]] = SharedObjectManager.dict()
+        self.CoreThreadStatusPool: Dict[str, List[int]] = SharedObjectManager.dict()
+        self.ExpandThreadStatusPool: Dict[str, List[int]] = SharedObjectManager.dict()
         self.ResultStorageQueue: multiprocessing.Queue = multiprocessing.Queue()
         self.TaskLock: multiprocessing.Lock = multiprocessing.Lock()
 
@@ -2916,7 +2985,6 @@ class _ProcessObject(multiprocessing.Process):
                 error_code = ctypes.windll.kernel32.GetLastError()
                 self.Logger.error(f"[{self.ProcessName} - {self.pid}] memory cleanup failed with error code {error_code}.")
             ctypes.windll.kernel32.CloseHandle(handle)
-            return
 
     async def _taskProcessor(self):
         """
@@ -2964,8 +3032,6 @@ class _ProcessObject(multiprocessing.Process):
                         self._cleanupProcessMemory()
                         idle_times = 0
                     idle_times += 0.001
-                    if self.WorkingEvent.is_set():
-                        self.WorkingEvent.clear()
                     continue
             except queue.Empty:
                 await asyncio.sleep(0.001)
@@ -2973,8 +3039,6 @@ class _ProcessObject(multiprocessing.Process):
                     self._cleanupProcessMemory()
                     idle_times = 0
                 idle_times += 0.001
-                if self.WorkingEvent.is_set():
-                    self.WorkingEvent.clear()
                 continue
             task_priority, task_object = task_data
             try:
@@ -3043,7 +3107,6 @@ class _ProcessObject(multiprocessing.Process):
             - The use of asynchronous execution allows for efficient handling of task results without blocking other operations.
         """
 
-        self.SynchronizationManager.ResultStorageQueue.put_nowait((task_result, task_object.TaskID))
         # noinspection PyBroadException
         try:
             del self.PendingTasks[task_object.TaskID]
@@ -3051,6 +3114,13 @@ class _ProcessObject(multiprocessing.Process):
             pass
         except Exception:
             self.Logger.error(f"[{self.ProcessName} - {self.pid}] failed to remove task {task_object.TaskID} from PendingTasks.")
+        status_pool = self.SynchronizationManager.CoreProcessStatusPool if self.ProcessType == "Core" else self.SynchronizationManager.ExpandProcessStatusPool
+        current_status = status_pool[self.ProcessName]
+        current_status[1] -= 1
+        status_pool[self.ProcessName] = current_status
+        self.SynchronizationManager.ResultStorageQueue.put_nowait((task_result, task_object.TaskID))
+        if len(self.PendingTasks) == 0:
+            self.WorkingEvent.clear()
 
     async def _requeueTask(self, task_priority: str, task_object: _TaskObject):
         """
@@ -3340,12 +3410,8 @@ class _ThreadObject(threading.Thread):
         try:
             task_result = await task_object.execute()
             await self._taskResultProcessor(task_result, task_object)
-            if self.WorkingEvent.is_set():
-                self.WorkingEvent.clear()
         except asyncio.CancelledError:
             self.Logger.error(f"[{self.ThreadName} - {self.ident}] task {task_object.TaskID} has been cancelled.")
-            if self.WorkingEvent.is_set():
-                self.WorkingEvent.clear()
 
     async def _taskResultProcessor(self, task_result: Any, task_object: type(_TaskObject)):
         """
@@ -3370,7 +3436,6 @@ class _ThreadObject(threading.Thread):
             - The use of asynchronous execution allows for efficient handling of task results without blocking other operations.
         """
 
-        self.SynchronizationManager.ResultStorageQueue.put_nowait((task_result, task_object.TaskID))
         # noinspection PyBroadException
         try:
             del self.PendingTasks[task_object.TaskID]
@@ -3378,6 +3443,13 @@ class _ThreadObject(threading.Thread):
             pass
         except Exception:
             self.Logger.error(f"[{self.ThreadName} - {self.ident}] failed to remove task {task_object.TaskID} from PendingTasks.")
+        status_pool = self.SynchronizationManager.CoreThreadStatusPool if self.ThreadType == "Core" else self.SynchronizationManager.ExpandThreadStatusPool
+        current_status = status_pool[self.ThreadName]
+        current_status[1] -= 1
+        status_pool[self.ThreadName] = current_status
+        self.SynchronizationManager.ResultStorageQueue.put_nowait((task_result, task_object.TaskID))
+        if len(self.PendingTasks) == 0:
+            self.WorkingEvent.clear()
 
     async def _requeueTask(self, task_priority: str, task_object: _TaskObject):
         """
@@ -3459,39 +3531,42 @@ class _ThreadObject(threading.Thread):
 
 class _LoadBalancer(threading.Thread):
     """
-    Balances the load between processes and threads in the concurrent system.
+    The Load Balancer for managing task allocation across processes and threads.
 
-    This class monitors the status of processes and threads, expanding or shrinking them based on the current workload and configured policies.
+    This class extends the threading.Thread class and serves as a daemon thread that continuously monitors
+    the load on various processes and threads. It implements policies for expanding and shrinking the number of
+    active processes and threads based on the current load and system configuration.
 
     Attributes:
-        SynchronizationManager: Manages synchronization across processes and threads.
-        ConfigManager: Manages system configuration settings.
-        Logger: Logger for the load balancer.
-        DebugMode: Flag indicating whether debug mode is active.
-        CloseEvent: Event to signal the load balancer to stop.
+        SynchronizationManager: An instance of _SynchronizationManager to manage synchronization.
+        ConfigManager: An instance of _ConfigManager to handle configuration settings.
+        Logger: A logging.Logger instance for logging operations and errors.
+        DebugMode: A boolean flag indicating whether debug mode is enabled.
+        EventLoop: An optional asyncio.AbstractEventLoop instance for managing asynchronous operations.
+        CloseEvent: A multiprocessing.Event instance to signal when the load balancer should stop.
 
     Methods:
-        run: Continuously checks the load and manages process and thread expansion/shrinkage.
-        stop: Signals the load balancer to stop and waits for it to finish.
-        _cleanupMainProcessMemory: Cleans up memory for the main process.
+        run: Starts the event loop and runs the main logic for load balancing.
+        stop: Signals the load balancer to stop and waits for the thread to join.
+        main: The main coroutine for handling process and thread status updates and policy executions.
+        _cleanupMainProcessMemory: Cleans up memory for the main process based on the OS.
         _cleanupServiceProcessMemory: Cleans up memory for service processes.
-        _updateThreadStatus: Updates the status of threads in the synchronization manager.
-        _updateProcessStatus: Updates the status of processes in the synchronization manager.
-        _expandPolicyExecutor: Executes the appropriate expansion policy.
-        _shrinkagePolicyExecutor: Executes the appropriate shrinkage policy.
-        _isExpansionAllowed: Checks if expansion is allowed based on configured limits.
-        _expandProcess: Expands the number of processes based on the current load.
-        _expandThread: Expands the number of threads based on the current load.
-        _generateExpandID: Generates a unique ID for a new process or thread.
-        _autoExpand: Automatically expands processes and threads based on average load.
-        _beforehandExpand: Expands processes and threads based on pending task counts.
-        _noExpand: Placeholder for no expansion policy.
-        _autoShrink: Automatically shrinks idle processes and threads after a timeout.
-        _timeoutShrink: Shrinks processes and threads that exceed a specified timeout.
+        _updateProcessStatus: Updates the status of all managed processes.
+        _expandPolicyExecutor: Executes the expansion policy for processes and threads.
+        _noExpand: A placeholder for a no-expansion policy.
+        _autoExpand: Automatically expands processes and threads based on load.
+        _beforehandExpand: Expands processes and threads based on pending tasks.
+        _isAllowExpansion: Checks if expansion is allowed for processes or threads.
+        _expandProcess: Expands a new process and adds it to the tracking pools.
+        _expandThread: Expands a new thread and adds it to the tracking pools.
+        _shrinkagePolicyExecutor: Executes the shrinkage policy for processes and threads.
+        _noShrink: A placeholder for a no-shrink policy.
+        _autoShrink: Automatically shrinks idle processes and threads.
+        _timeoutShrink: Shrinks processes and threads based on timeout criteria.
 
     Notes:
-        - The load balancer plays a crucial role in maintaining system efficiency by adjusting resources according to demand.
-        - Proper monitoring and management of processes and threads can prevent resource waste and improve performance.
+        - This class is essential for ensuring efficient resource utilization by balancing the load across multiple processes and threads.
+        - It utilizes a combination of synchronous and asynchronous methods to maintain responsiveness while managing system resources.
     """
 
     def __init__(self, SM: _SynchronizationManager, CM: _ConfigManager, Logger: logging.Logger, DebugMode: bool):
@@ -3500,92 +3575,115 @@ class _LoadBalancer(threading.Thread):
         self.ConfigManager = CM
         self.Logger = Logger
         self.DebugMode = DebugMode
+        self.EventLoop: Optional[asyncio.AbstractEventLoop] = None
         self.CloseEvent = multiprocessing.Event()
 
     def run(self):
         """
-        Executes the main loop for the load balancer.
+        Executes the main event loop for the LoadBalancer.
 
-        This method continuously manages the state and resources of the system, performing regular updates
-        and cleanups as needed while the system is running.
+        This method initializes a new asyncio event loop, performs memory cleanup for the main process and service process, and then starts the main asynchronous task.
+        It ensures that the event loop is properly closed after execution, regardless of whether the task completes successfully or raises an exception.
 
-        steps:
-            1. Initialize a variable to track elapsed time (rest_times).
-            2. Perform an initial cleanup of memory for the main and service processes.
-            3. Enter a loop that continues until the CloseEvent is set:
-                - Update the status of threads by calling `_updateThreadStatus()`.
-                - Update the status of processes by calling `_updateProcessStatus()`.
-                - Execute any necessary expansion policies by calling `_expandPolicyExecutor()`.
-                - Execute any necessary shrinkage policies by calling `_shrinkagePolicyExecutor()`.
-                - Sleep for a short duration (0.001 seconds) to yield control.
-                - Increment the rest_times tracker.
-                - If the elapsed time exceeds 60 seconds (60000 milliseconds):
-                    - Perform a cleanup of memory for the main and service processes.
-                    - Reset the rest_times tracker.
+        Steps:
+        1. Create a new asyncio event loop and set it as the current event loop.
+        2. Perform memory cleanup for the main process using `_cleanupMainProcessMemory`.
+        3. Perform memory cleanup for the service process using `_cleanupServiceProcessMemory`.
+        4. Start the main asynchronous task using `run_until_complete` with `self.main()`.
+        5. After the main task completes (or raises an exception), close the event loop.
+        6. Log a debug message indicating that the LoadBalancer has been closed.
 
         Notes:
-            - This method is essential for maintaining the health and performance of the process management system.
-            - Regular updates and cleanups help to mitigate resource leaks and ensure optimal operation.
-            - The loop design allows for continuous monitoring and adjustments without blocking the system.
+        - This method is critical for the proper functioning of the LoadBalancer, ensuring that resources are managed efficiently and the event loop operates as expected.
+        """
+        self.EventLoop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.EventLoop)
+
+        self._cleanupMainProcessMemory()
+        self._cleanupServiceProcessMemory()
+        try:
+            self.EventLoop.run_until_complete(self.main())
+        finally:
+            self.EventLoop.close()
+            self.Logger.debug(f"[LoadBalancer] has been closed.")
+
+    def stop(self):
+        """
+        Stops the LoadBalancer thread.
+
+        This method signals the thread to stop its execution by setting the `CloseEvent`. It then waits for the thread to finish by calling `join` with a timeout of 2 seconds. After ensuring the thread has been stopped, the instance is deleted to free resources.
+
+        Steps:
+        1. Set the `CloseEvent` to signal the thread to stop.
+        2. Call `join` with a timeout of 2 seconds to wait for the thread to finish executing.
+        3. Delete the instance of the LoadBalancer to clean up resources.
+
+        Notes:
+        - The `join` method is crucial to ensure that the thread has finished its execution before the object is deleted.
+        - This method should be called to gracefully shut down the LoadBalancer and ensure that any ongoing tasks are completed or cleaned up.
+        """
+        self.CloseEvent.set()
+        self.join(2)
+        del self
+
+    async def main(self):
+        """
+        Main loop for the LoadBalancer.
+
+        This asynchronous method serves as the main execution loop for the LoadBalancer. It continuously monitors and updates the status of processes, applies expansion and shrinkage policies, and performs memory cleanup periodically.
+
+        Steps:
+        1. Initialize a variable `rest_times` to track elapsed time for periodic cleanup.
+        2. Enter a loop that continues until the `CloseEvent` is set:
+           - Update the status of processes by calling `_updateProcessStatus()`.
+           - Execute the expansion policy asynchronously by calling `_expandPolicyExecutor()`.
+           - Execute the shrinkage policy synchronously by calling `_shrinkagePolicyExecutor()`.
+           - Sleep for a short duration (0.001 seconds) to yield control back to the event loop.
+           - Increment `rest_times` by 0.001 seconds.
+           - If `rest_times` reaches or exceeds 60 seconds (60000 milliseconds):
+             - Perform memory cleanup for the main process and service processes by calling `_cleanupMainProcessMemory()` and `_cleanupServiceProcessMemory()`.
+             - Reset `rest_times` to 0 for the next cleanup interval.
+
+        Notes:
+        - The method ensures that resource utilization is monitored and managed dynamically.
+        - Regular memory cleanup helps maintain optimal performance and prevent memory bloat.
         """
 
         rest_times = 0
-        self._cleanupMainProcessMemory()
-        self._cleanupServiceProcessMemory()
         while not self.CloseEvent.is_set():
-            self._updateThreadStatus()
             self._updateProcessStatus()
-            self._expandPolicyExecutor()
+            await self._expandPolicyExecutor()
             self._shrinkagePolicyExecutor()
-            time.sleep(0.001)
+            await asyncio.sleep(0.001)
             rest_times += 0.001
             if rest_times >= 60000:
                 self._cleanupMainProcessMemory()
                 self._cleanupServiceProcessMemory()
                 rest_times = 0
 
-    def stop(self):
-        """
-        Stops the current thread by signaling it to close and waiting for it to finish.
-
-        steps:
-            1. Set the CloseEvent to signal the thread to stop its operation.
-            2. Wait for the thread to finish execution, allowing up to 2 seconds for completion.
-            3. Delete the thread object to free resources after it has stopped.
-
-        Notes:
-            - This method ensures a graceful shutdown of the thread, allowing for proper cleanup.
-            - The use of the CloseEvent allows the thread to terminate its operations safely.
-        """
-
-        self.CloseEvent.set()
-        self.join(2)
-        del self
-
     def _cleanupMainProcessMemory(self):
         """
-        Cleans up memory used by the main process based on the operating system.
+        Cleans up memory used by the main process.
 
-        This method performs memory cleanup operations tailored for Linux, Windows, and macOS.
+        This method performs memory cleanup for the main process based on the operating system in use. It aims to release any memory that is no longer needed, helping to optimize performance and reduce memory bloat.
 
-        steps:
-            1. Determine the operating system using `platform.system()`.
-            2. If the operating system is Linux:
-                - Try to access the `libc` library to call `malloc_trim` to release unused memory.
-                - If `malloc_trim` is not available, run shell commands to sync the filesystem and drop caches.
-                - Log any errors that occur during the cleanup process.
-            3. If the operating system is Windows:
-                - Attempt to obtain a handle to the current process.
-                - If successful, call `EmptyWorkingSet` to free memory allocated to the process.
-                - Log any errors that occur during handle retrieval or memory cleanup.
-            4. If the operating system is macOS:
-                - Use the `purge` command to clean up memory.
-                - Log any errors that occur during the cleanup process.
-            5. Handle exceptions gracefully and log errors using the provided logger.
+        Steps:
+        1. Determine the current operating system using `platform.system()`.
+        2. If the system is Linux:
+           - Attempt to load the `libc` library and call `malloc_trim()` if available to release unused memory.
+           - If `malloc_trim()` is not available, synchronize the filesystem and clear page cache by writing to `/proc/sys/vm/drop_caches`.
+           - Log any exceptions encountered during the process.
+        3. If the system is Windows:
+           - Open a handle to the current process with permissions to query information and read the virtual memory.
+           - Use `EmptyWorkingSet` to release memory.
+           - Handle any errors while obtaining the process handle or during the memory cleanup operation.
+        4. If the system is macOS:
+           - Execute the `purge` command to free up memory.
+           - Log any errors encountered while executing the command.
 
         Notes:
-            - This method is essential for managing memory usage effectively, particularly in long-running processes where memory fragmentation can occur.
-            - Proper error handling ensures that failures during the cleanup process are logged and do not cause crashes.
+        - The method ensures that memory is cleaned up appropriately based on the system's capabilities.
+        - Error handling is included to ensure that failures in memory cleanup are logged for further analysis.
         """
 
         system = platform.system()
@@ -3626,29 +3724,25 @@ class _LoadBalancer(threading.Thread):
                 self.Logger.error(f"[{self.name} - {self.ident}] memory cleanup failed on macOS: {str(e)}")
             except Exception as e:
                 self.Logger.error(f"[{self.name} - {self.ident}] unexpected error during memory cleanup on macOS: {str(e)}\n\n{traceback.format_exc()}.")
-            finally:
-                return
 
     def _cleanupServiceProcessMemory(self):
         """
-        Cleans up memory used by the service process on Windows.
+        Cleans up memory used by the service process.
 
-        This method attempts to free memory allocated to the service process by calling
-        the `EmptyWorkingSet` function on the process handle associated with the service.
+        This method is designed to release memory that is no longer needed by the service process, specifically when running on Windows. It aims to optimize memory usage and ensure that resources are freed up appropriately.
 
-        steps:
-            1. Check if the operating system is Windows.
-            2. If the operating system is Windows:
-                - Attempt to obtain a handle to the service process using `SynchronizationManager.SharedObjectManagerID`.
-                - If the handle is not valid, raise a ValueError indicating failure to obtain a valid handle.
-                - If successful, call `EmptyWorkingSet` to free memory allocated to the process.
-                - Log any errors that occur during handle retrieval or memory cleanup.
-                - If `EmptyWorkingSet` fails, log the error code obtained from `GetLastError`.
-            3. Close the handle to free the resource.
+        Steps:
+        1. Determine the current operating system using `platform.system()`.
+        2. If the system is Windows:
+           - Attempt to open a handle to the service process using the process ID stored in `SharedObjectManagerID` with permissions to query information and read virtual memory.
+           - If the handle cannot be obtained, log an error and exit the method.
+           - Use `EmptyWorkingSet` to release memory associated with the process.
+           - Log any errors encountered during the memory cleanup operation, including failure to obtain a valid handle or errors from `EmptyWorkingSet`.
+           - Ensure that the process handle is closed after memory cleanup.
 
         Notes:
-            - This method is crucial for managing memory effectively in the service process, helping to mitigate memory leaks.
-            - Proper error handling ensures that failures during the cleanup process are logged and do not cause crashes.
+        - This method specifically targets Windows systems and utilizes Windows API calls to manage process memory.
+        - Error handling is included to log failures, which aids in debugging and system monitoring.
         """
 
         system = platform.system()
@@ -3668,88 +3762,72 @@ class _LoadBalancer(threading.Thread):
                 error_code = ctypes.windll.kernel32.GetLastError()
                 self.Logger.error(f"[{self.name} - {self.ident}] memory cleanup failed with error code {error_code}.")
             ctypes.windll.kernel32.CloseHandle(handle)
-            return
-
-    def _updateThreadStatus(self):
-        """
-        Updates the status of all core and expanded threads in the synchronization manager.
-
-        steps:
-            1. Iterate over each thread in the core thread pool:
-                - Update the core thread status pool with the thread's identifier and the count of its pending tasks.
-            2. If the expanded thread pool is not empty, iterate over each thread in the expanded thread pool:
-                - Update the expanded thread status pool with the thread's identifier and the count of its pending tasks.
-
-        Notes:
-            - This method is essential for maintaining accurate tracking of thread statuses and their workloads.
-            - Keeping the status updated allows for better resource management and load balancing within the system.
-        """
-
-        global _CoreThreadPool, _ExpandThreadPool
-        for thread_name, thread_obj in _CoreThreadPool.items():
-            self.SynchronizationManager.CoreThreadStatusPool[thread_name] = (thread_obj.ident, len(thread_obj.PendingTasks))
-        if _ExpandThreadPool:
-            for thread_name, thread_obj in _ExpandThreadPool.items():
-                self.SynchronizationManager.ExpandThreadStatusPool[thread_name] = (thread_obj.ident, len(thread_obj.PendingTasks))
 
     def _updateProcessStatus(self):
         """
-        Updates the status of core and expand processes in the system.
+        Updates the status of all processes in the core and expand process pools.
 
-        This method retrieves the current CPU and memory usage for each process in both the
-        CoreProcessPool and ExpandProcessPool, and updates the corresponding status pools.
+        This method iterates through the core and expand process pools, retrieving the CPU and memory usage for each process. It calculates a weighted load for each process based on its CPU and memory usage, updating the respective status pools accordingly.
 
-        steps:
-            1. Iterate through each process in the CoreProcessPool:
-                - Calculate the total task count by summing the sizes of high, medium, and low priority queues,
-                  and the length of pending tasks.
-                - Use the _Monitor to get the CPU and memory usage for the current process.
-                - Calculate a weighted load based on the CPU and memory usage, giving equal weight to both.
-                - Update the CoreProcessStatusPool with the process ID, task count, and calculated weighted load.
-                - If an error occurs during this process, set the weighted load to 0 for that process in the status pool.
-            2. If there are any processes in the ExpandProcessPool:
-                - Repeat the same steps as above to update the ExpandProcessStatusPool.
+        Steps:
+        1. Iterate through each process in the core process pool:
+           - For each process, retrieve the CPU usage and memory usage using the `_Monitor` class.
+           - Calculate the weighted load using a formula that combines CPU usage, memory usage (weighted at 0.6), and the current task count (weighted at 0.4).
+           - Ensure the weighted load is clamped between 0 and 100.
+           - Update the current status in `CoreProcessStatusPool` with the new weighted load.
+           - In case of an exception, reset the weighted load to 0 and update the status pool accordingly.
+
+        2. If the expand process pool is not empty, repeat the above steps for each process in the expand process pool, updating the `ExpandProcessStatusPool` instead.
 
         Notes:
-            - This method is crucial for monitoring the performance and load of each process within the system.
-            - Proper error handling ensures that any issues in retrieving process information do not affect the entire status update.
+        - The method uses a global variable to access the process pools and relies on a separate `_Monitor` class for gathering usage metrics.
+        - Error handling is included to ensure that the method continues execution even if an error occurs while updating a particular process.
         """
 
         global _CoreProcessPool, _ExpandProcessPool
         for process_name, process_obj in _CoreProcessPool.items():
-            task_count = process_obj.HighPriorityQueue.qsize() + process_obj.MediumPriorityQueue.qsize() + process_obj.LowPriorityQueue.qsize() + len(process_obj.PendingTasks)
             # noinspection PyBroadException
             try:
                 process_cpu_usage = _Monitor.processCpuUsage(process_obj.pid, 0.001)
                 process_memory_usage = _Monitor.processMemoryUsage(process_obj.pid)
-                weighted_load = int((process_cpu_usage * 0.5) + (process_memory_usage * 0.5))
-                self.SynchronizationManager.CoreProcessStatusPool[process_name] = (process_obj.pid, task_count, min(max(weighted_load, 0), 100))
+                weighted_load = max(0, min(int(process_cpu_usage + (process_memory_usage * 0.6) + (self.SynchronizationManager.CoreProcessStatusPool[process_name][1] * 0.4)), 100))
+                current_status = self.SynchronizationManager.CoreProcessStatusPool[process_name]
+                current_status[2] = weighted_load
+                self.SynchronizationManager.CoreProcessStatusPool[process_name] = current_status
             except Exception:
-                self.SynchronizationManager.CoreProcessStatusPool[process_name] = (process_obj.pid, task_count, 0)
+                current_status = self.SynchronizationManager.CoreProcessStatusPool[process_name]
+                current_status[2] = 0
+                self.SynchronizationManager.CoreProcessStatusPool[process_name] = current_status
         if _ExpandProcessPool:
             for process_name, process_obj in _ExpandProcessPool.items():
-                task_count = process_obj.HighPriorityQueue.qsize() + process_obj.MediumPriorityQueue.qsize() + process_obj.LowPriorityQueue.qsize() + len(process_obj.PendingTasks)
                 # noinspection PyBroadException
                 try:
                     process_cpu_usage = _Monitor.processCpuUsage(process_obj.pid, 0.001)
                     process_memory_usage = _Monitor.processMemoryUsage(process_obj.pid)
-                    weighted_load = int((process_cpu_usage * 0.5) + (process_memory_usage * 0.5))
-                    self.SynchronizationManager.ExpandProcessStatusPool[process_name] = (process_obj.pid, task_count, min(max(weighted_load, 0), 100))
+                    weighted_load = max(0, min(int(process_cpu_usage + (process_memory_usage * 0.6) + (self.SynchronizationManager.ExpandProcessStatusPool[process_name][1] * 0.4)), 100))
+                    current_status = self.SynchronizationManager.ExpandProcessStatusPool[process_name]
+                    current_status[2] = weighted_load
+                    self.SynchronizationManager.ExpandProcessStatusPool[process_name] = current_status
                 except Exception:
-                    self.SynchronizationManager.ExpandProcessStatusPool[process_name] = (process_obj.pid, task_count, 0)
+                    current_status = self.SynchronizationManager.ExpandProcessStatusPool[process_name]
+                    current_status[2] = 0
+                    self.SynchronizationManager.ExpandProcessStatusPool[process_name] = current_status
 
-    def _expandPolicyExecutor(self):
+    async def _expandPolicyExecutor(self):
         """
-        Executes the configured expansion policy method to manage resource allocation.
+        Executes the appropriate expansion policy based on the current configuration.
 
-        steps:
-            1. Define a dictionary mapping expansion policy names to their corresponding methods.
-            2. Retrieve the expansion policy method based on the current configuration.
-            3. Call the selected expansion method to perform the necessary actions.
+        This method selects the expansion method to be executed according to the defined expansion policy in the configuration manager. It utilizes a dictionary to map each policy name to its corresponding method.
 
-        Notes:
-            - This method allows for flexible execution of different expansion strategies based on the system's configuration.
-            - The available policies include "NoExpand", "AutoExpand", and "BeforehandExpand".
+        Steps:
+        1. Create a dictionary `policy_method` that maps expansion policy names to their respective methods:
+           - "NoExpand": Calls `_noExpand`
+           - "AutoExpand": Calls `_autoExpand`
+           - "BeforehandExpand": Calls `_beforehandExpand`
+
+        2. Retrieve the expansion method corresponding to the current expansion policy from the configuration manager.
+
+        3. Call the selected expansion method asynchronously.
         """
 
         policy_method = {
@@ -3758,77 +3836,73 @@ class _LoadBalancer(threading.Thread):
             "BeforehandExpand": self._beforehandExpand,
         }
         expand_method = policy_method[self.ConfigManager.ExpandPolicy.value]
-        expand_method()
+        await expand_method()
 
     def _noExpand(self):
         """No expansion policy method."""
         pass
 
-    def _autoExpand(self):
+    async def _autoExpand(self):
         """
-        Automatically expands the process and thread pools based on their average load.
+        Automatically expands processes or threads based on their current load and configured limits.
 
-        steps:
-            1. If the core process count is greater than zero:
-                - Calculate the total current load of core processes by summing their load values from the status pool.
-                - Compute the average load per core process. If there are no core processes, set the average to zero.
-                - Determine the ideal load per process as 80% of the total allowable load divided by the total number of processes (core and expanded).
-                - If the average process load exceeds the ideal load:
-                    - Check if expansion of processes is allowed using the isExpansionAllowed method:
-                        - If allowed, call the expandProcess method.
-                        - If not allowed, log a debug message indicating the inability to expand processes despite high load.
-            2. Calculate the total current load of core threads by summing their load values from the status pool.
-            3. Compute the average load per core thread. If there are no core threads, set the average to zero.
-            4. Define the ideal load per thread as 80% of the total allowable load.
-            5. If the average thread load exceeds the ideal load:
-                - Check if expansion of threads is allowed:
-                    - If allowed, call the expandThread method.
-                    - If not allowed, log a debug message indicating the inability to expand threads despite high load.
+        This method checks the load of the core processes and threads to determine whether additional processes or threads should be started to handle the current workload. The decisions are based on the average load compared to a predefined ideal load.
 
-        Notes:
-            - This method is crucial for dynamically adjusting system capacity based on current workloads to maintain performance.
-            - It ensures that resources are efficiently utilized and prevents overload scenarios by expanding when needed.
+        Steps:
+        1. Check if the CoreProcessCount is not zero:
+           - Calculate the total load of all core processes from the CoreProcessStatusPool.
+           - Compute the average load per process.
+           - Define an ideal load threshold per process (80%).
+           - If the average process load exceeds the ideal threshold, check if expansion is allowed:
+             - If allowed, asynchronously expand the processes.
+             - If not allowed, log a debug message indicating the load reached the threshold but expansion cannot proceed.
+
+        2. Calculate the total and average load for core threads:
+           - Repeat the same logic as for processes, using the CoreThreadStatusPool to evaluate thread load.
+           - If the average thread load exceeds the ideal threshold, check if expansion is allowed:
+             - If allowed, asynchronously expand the threads.
+             - If not allowed, log a debug message indicating the load reached the threshold but expansion cannot proceed.
         """
 
         if self.ConfigManager.CoreProcessCount.value != 0:
             current_core_process_total_load = sum([load for _, _, load in self.SynchronizationManager.CoreProcessStatusPool.values()])
             average_process_load = current_core_process_total_load / len(self.SynchronizationManager.CoreProcessStatusPool) if len(self.SynchronizationManager.CoreProcessStatusPool) > 0 else 0
-            ideal_load_per_process = 100 * 0.8 / (len(self.SynchronizationManager.CoreProcessStatusPool) + len(self.SynchronizationManager.ExpandProcessStatusPool))
-            if average_process_load > ideal_load_per_process:
-                if self._isExpansionAllowed("Process"):
-                    self._expandProcess()
+            ideal_load_per_process = 80
+            if (average_process_load * 10) > ideal_load_per_process:
+                if self._isAllowExpansion("Process"):
+                    await self._expandProcess()
                 else:
                     self.Logger.debug(f"Load reaches {int(ideal_load_per_process)}%, but unable to expand more process")
 
         current_core_thread_total_load = sum([load for _, load in self.SynchronizationManager.CoreThreadStatusPool.values()])
         average_thread_load = current_core_thread_total_load / len(self.SynchronizationManager.CoreThreadStatusPool) if len(self.SynchronizationManager.CoreThreadStatusPool) > 0 else 0
-        ideal_load_per_thread = 100 * 0.8
+        ideal_load_per_thread = 80
         if average_thread_load > ideal_load_per_thread:
-            if self._isExpansionAllowed("Thread"):
-                self._expandThread()
+            if self._isAllowExpansion("Thread"):
+                await self._expandThread()
             else:
                 self.Logger.debug(f"Load reaches {int(ideal_load_per_thread)}%, but unable to expand more thread")
 
     def _beforehandExpand(self):
         """
-        Checks the pending task counts and expands the process and thread pools if necessary.
+        Expands processes and threads proactively based on the number of pending tasks.
 
-        steps:
-            1. If the core process count is greater than zero:
-                - Calculate the total number of pending tasks for core processes by summing the task counts from the status pool.
-            2. If there are no core processes, set the pending task count for core processes to zero.
-            3. Calculate the total number of pending tasks for core threads by summing the task counts from the status pool.
-            4. Check if the combined pending task count of core processes and threads exceeds 80% of the global task threshold:
-                - If it does, check if expansion of processes is allowed using the isExpansionAllowed method:
-                    - If allowed, call the expandProcess method.
-                    - If not allowed, log a debug message indicating the inability to expand processes due to the pending task count.
-                - Similarly, check if expansion of threads is allowed:
-                    - If allowed, call the expandThread method.
-                    - If not allowed, log a debug message indicating the inability to expand threads due to the pending task count.
+        This method evaluates the total number of pending tasks across core processes and threads to determine whether to initiate additional processes or threads before reaching maximum capacity. The decision to expand is based on a global task threshold.
 
-        Notes:
-            - This method is important for proactive resource management to handle an increasing load by expanding the system's capacity.
-            - It ensures that the system operates efficiently by monitoring task thresholds and taking appropriate actions.
+        Steps:
+        1. Check if the CoreProcessCount is not zero:
+           - If it is, calculate the total pending task count for all core processes from the CoreProcessStatusPool.
+           - If not, set the core_process_pending_task_count to 0.
+
+        2. Calculate the total pending task count for core threads from the CoreThreadStatusPool.
+
+        3. Check if the combined pending task count for processes and threads meets or exceeds 80% of the configured global task threshold:
+           - If it does, check if expansion for processes is allowed:
+             - If allowed, call the method to expand processes.
+             - If not allowed, log a debug message indicating the pending task count reached the threshold but expansion cannot proceed.
+           - Similarly, check if expansion for threads is allowed:
+             - If allowed, call the method to expand threads.
+             - If not allowed, log a debug message indicating the pending task count reached the threshold but expansion cannot proceed.
         """
 
         if self.ConfigManager.CoreProcessCount.value != 0:
@@ -3837,37 +3911,38 @@ class _LoadBalancer(threading.Thread):
             core_process_pending_task_count = 0
         core_thread_pending_task_count = sum([task_count for _, task_count in self.SynchronizationManager.CoreThreadStatusPool.values()])
         if (core_process_pending_task_count + core_thread_pending_task_count) >= self.ConfigManager.GlobalTaskThreshold.value * 0.8:
-            if self._isExpansionAllowed("Process"):
+            if self._isAllowExpansion("Process"):
                 self._expandProcess()
             else:
                 self.Logger.debug(f"Pending task count reaches {self.ConfigManager.GlobalTaskThreshold.value}, but unable to expand more process")
-            if self._isExpansionAllowed("Thread"):
+            if self._isAllowExpansion("Thread"):
                 self._expandThread()
             else:
                 self.Logger.debug(f"Pending task count reaches {self.ConfigManager.GlobalTaskThreshold.value}, but unable to expand more thread")
 
-    def _isExpansionAllowed(self, expand_type: Literal["Process", "Thread"]) -> bool:
+    def _isAllowExpansion(self, expand_type: Literal["Process", "Thread"]) -> bool:
         """
-        Checks if expansion of the specified type (process or thread) is allowed based on the configured limits.
+        Checks whether expansion for processes or threads is allowed based on configured limits.
 
-        :param expand_type: The type of expansion to check, either "Process" or "Thread".
+        This method evaluates the current number of processes or threads against the maximum allowed count as configured in the system settings. It helps to prevent over-expansion which could lead to resource exhaustion.
 
-        :return: A boolean indicating whether expansion is allowed.
+        Parameters:
+            expand_type (Literal["Process", "Thread"]): The type of expansion to check, either "Process" or "Thread".
 
-        steps:
-            1. Use a match-case statement to determine the type of expansion.
-            2. For "Process":
-                - Calculate the total number of core and expanded processes.
-                - Compare against the configured maximum process count.
-                - Return False if the total exceeds the limit; otherwise, return True.
-            3. For "Thread":
-                - Calculate the total number of core and expanded threads.
-                - Compare against the configured maximum thread count.
-                - Return False if the total exceeds the limit; otherwise, return True.
+        Returns:
+            bool: Returns True if expansion is allowed, False otherwise.
 
-        Notes:
-            - This method is crucial for managing resources and ensuring that the system does not exceed configured limits for processes and threads.
-            - It helps maintain stability and performance by preventing over-allocation.
+        Steps:
+        1. Match the given `expand_type`:
+           - If it is "Process":
+             - Check if the total number of current core and expand processes exceeds the configured maximum process count:
+               - If so, return False (expansion is not allowed).
+               - Otherwise, return True (expansion is allowed).
+
+           - If it is "Thread":
+             - Check if the total number of current core and expand threads exceeds the configured maximum thread count:
+               - If so, return False (expansion is not allowed).
+               - Otherwise, return True (expansion is allowed).
         """
 
         match expand_type:
@@ -3880,84 +3955,79 @@ class _LoadBalancer(threading.Thread):
                     return False
                 return True
 
-    def _expandProcess(self):
+    async def _expandProcess(self):
         """
-        Expands the process pool by creating and starting a new process.
+        Expands the number of processes by creating a new expand process.
 
-        steps:
-            1. Retrieve the current time to track the process's survival.
-            2. Generate a unique identifier for the new process using the expansion ID generator.
-            3. Construct a process name based on the generated ID.
-            4. Create a new process object, initializing it with the necessary parameters.
-            5. Start the newly created process.
-            6. Add the process object to the expand process pool using the generated ID.
-            7. Update the synchronization manager's status pool with the new process's name and initial status.
-            8. Record the survival time of the new process.
+        This asynchronous method is responsible for initializing and starting a new process when the system determines that expansion is necessary based on load or policy settings. The new process is added to the expand process pool for management and monitoring.
 
-        Notes:
-            - This method allows for dynamic expansion of the process pool to handle additional workloads.
-            - The survival time tracking enables management and potential shrinking of idle processes later.
+        Steps:
+        1. Retrieve the current time to track the survival time of the process.
+        2. Generate a unique identifier for the new process using the `_generateExpandID` method.
+        3. Create a new `_ProcessObject` instance for the expansion process:
+           - Pass in the generated process ID, process type as "Expand", synchronization manager, configuration manager, and debug mode flag.
+        4. Start the newly created process.
+        5. Add the process object to the `_ExpandProcessPool` for management.
+        6. Initialize its status in the `ExpandProcessStatusPool` with its process ID, an initial task count of 0, and an initial load of 0.
+        7. Record the current time as the survival time for the new process in the `_ExpandProcessSurvivalTime` dictionary.
         """
 
         global _ExpandProcessPool, _ExpandProcessSurvivalTime
         current_time = time.time()
         process_id = self._generateExpandID("Process")
-        process_name = f"Process-{process_id}"
-        process_object = _ProcessObject(process_name, "Expand", self.SynchronizationManager, self.ConfigManager, self.DebugMode)
+        process_object = _ProcessObject(process_id, "Expand", self.SynchronizationManager, self.ConfigManager, self.DebugMode)
         process_object.start()
         _ExpandProcessPool[process_id] = process_object
-        self.SynchronizationManager.ExpandProcessStatusPool[process_name] = (process_object.pid, 0, 0)
-        _ExpandProcessSurvivalTime[process_name] = current_time
+        self.SynchronizationManager.ExpandProcessStatusPool[process_id] = [process_object.pid, 0, 0]
+        _ExpandProcessSurvivalTime[process_id] = current_time
 
-    def _expandThread(self):
+    async def _expandThread(self):
         """
-        Expands the thread pool by creating and starting a new thread.
+        Expands the number of threads by creating a new expand thread.
 
-        steps:
-            1. Retrieve the current time to track the thread's survival.
-            2. Generate a unique identifier for the new thread using the expansion ID generator.
-            3. Construct a thread name based on the generated ID.
-            4. Create a new thread object, initializing it with the necessary parameters.
-            5. Start the newly created thread.
-            6. Add the thread object to the expand thread pool using the generated ID.
-            7. Update the synchronization manager's status pool with the new thread's name and initial status.
-            8. Record the survival time of the new thread.
+        This asynchronous method is responsible for initializing and starting a new thread when the system determines that expansion is necessary based on load or policy settings. The new thread is added to the expand thread pool for management and monitoring.
 
-        Notes:
-            - This method enables dynamic expansion of the thread pool to accommodate additional workloads.
-            - The survival time tracking allows for management and potential shrinking of idle threads later.
+        Steps:
+        1. Retrieve the current time to track the survival time of the thread.
+        2. Generate a unique identifier for the new thread using the `_generateExpandID` method.
+        3. Create a new `_ThreadObject` instance for the expansion thread:
+           - Pass in the generated thread ID, thread type as "Expand", synchronization manager, configuration manager, and logger.
+        4. Start the newly created thread.
+        5. Add the thread object to the `_ExpandThreadPool` for management.
+        6. Initialize its status in the `ExpandThreadStatusPool` with its thread identifier and an initial task count of 0.
+        7. Record the current time as the survival time for the new thread in the `_ExpandThreadSurvivalTime` dictionary.
         """
 
         global _ExpandThreadPool, _ExpandThreadSurvivalTime
         current_time = time.time()
         thread_id = self._generateExpandID("Thread")
-        thread_name = f"Thread-{thread_id}"
-        thread_object = _ThreadObject(thread_name, "Expand", self.SynchronizationManager, self.ConfigManager, self.Logger)
+        thread_object = _ThreadObject(thread_id, "Expand", self.SynchronizationManager, self.ConfigManager, self.Logger)
         thread_object.start()
         _ExpandThreadPool[thread_id] = thread_object
-        self.SynchronizationManager.ExpandThreadStatusPool[thread_name] = (thread_object.ident, 0)
-        _ExpandThreadSurvivalTime[thread_name] = current_time
+        self.SynchronizationManager.ExpandThreadStatusPool[thread_id] = [thread_object.ident, 0]
+        _ExpandThreadSurvivalTime[thread_id] = current_time
 
     @staticmethod
     def _generateExpandID(expand_type: Literal["Process", "Thread"]):
         """
-        Generates a unique identifier for expanded processes or threads.
+        Generates a unique identifier for the specified expansion type (Process or Thread).
 
-        :param expand_type: The type of expansion for which to generate an ID, either "Process" or "Thread".
+        This static method is responsible for creating a unique identifier for newly expanded processes or threads, ensuring that each ID is distinct and does not conflict with existing IDs in the respective pools.
 
-        :return: A unique identifier for the specified expansion type.
+        Steps:
+        1. Define a mapping of expansion types to their corresponding pools:
+           - `Process` maps to `_ExpandProcessPool`
+           - `Thread` maps to `_ExpandThreadPool`
+        2. Initialize a base ID with a format that combines the expand type and a counter (starting from 0).
+        3. Enter an infinite loop to check for uniqueness:
+           - If the current base ID does not exist in the relevant expand pool, return it as the unique identifier.
+           - If the ID already exists, increment the counter and update the base ID to try the next potential ID.
 
-        steps:
-            1. Define a mapping of expansion types to their corresponding pools (process or thread).
-            2. Initialize a basic ID starting with the format "<expand_type>-0".
-            3. Enter an infinite loop to find a unique ID:
-                - Check if the current basic ID already exists in the corresponding pool.
-                - If it does not exist, return the current basic ID.
-                - If it does exist, increment the numeric suffix of the ID and repeat.
+        Parameters:
+            expand_type (Literal["Process", "Thread"]): The type of expansion for which to generate the ID.
 
-        Notes:
-            - This method ensures that the generated ID is unique within the specified expansion type's pool.
-            - The ID format helps in easily identifying the type and instance of the expanded resource.
+        Returns:
+            str: A unique identifier for the specified expansion type.
         """
 
         global _ExpandProcessPool, _ExpandThreadPool
@@ -3973,16 +4043,21 @@ class _LoadBalancer(threading.Thread):
 
     def _shrinkagePolicyExecutor(self):
         """
-        Executes the configured shrinkage policy method to manage resource allocation.
+        Executes the appropriate shrinkage policy based on the current configuration.
 
-        steps:
-            1. Define a dictionary mapping shrinkage policy names to their corresponding methods.
-            2. Retrieve the shrinkage policy method based on the current configuration.
-            3. Call the selected shrinkage method to perform the necessary actions.
+        This method determines which shrinkage policy to apply (if any) based on the configuration of the system. It acts as a dispatcher that calls the corresponding method for the selected policy.
+
+        Steps:
+        1. Define a mapping of shrinkage policies to their respective methods:
+           - `NoShrink` maps to `_noShrink`
+           - `AutoShrink` maps to `_autoShrink`
+           - `TimeoutShrink` maps to `_timeoutShrink`
+        2. Retrieve the method associated with the currently set shrinkage policy from the configuration.
+        3. Call the identified shrinkage method to apply the policy.
 
         Notes:
-            - This method allows for flexible execution of different shrinkage strategies based on the system's configuration.
-            - The available policies include "NoShrink", "AutoShrink", and "TimeoutShrink".
+        - The policy can affect how system resources (processes/threads) are managed based on their activity and load.
+        - It is important to ensure that the configured policy is valid and can be executed without errors.
         """
 
         policy_method = {
@@ -3999,76 +4074,74 @@ class _LoadBalancer(threading.Thread):
 
     def _autoShrink(self):
         """
-        Automatically shrinks the pool of expanded processes and threads by closing those that are idle.
+        Automatically shrinks the number of expand processes and threads based on their activity levels.
 
-        steps:
-            1. If the core process count is greater than zero:
-                - Retrieve a list of all expanded processes.
-                - Identify idle processes that have not performed any tasks (status indicates zero workload).
-                - Determine which idle processes can be closed based on their survival time exceeding the configured shrinkage timeout.
-                - For each idle process that qualifies for closure:
-                    - Stop the process and remove it from the expand process pool.
-                    - Remove the corresponding entry from the expand process status pool and survival time tracking.
-                    - Log the closure of the process due to idle status.
-            2. Retrieve a list of all expanded threads.
-            3. Identify idle threads that have not performed any tasks.
-            4. Determine which idle threads can be closed based on their survival time exceeding the configured shrinkage timeout.
-            5. For each idle thread that qualifies for closure:
-                - Stop the thread and remove it from the expand thread pool.
-                - Remove the corresponding entry from the expand thread status pool and survival time tracking.
-                - Log the closure of the thread due to idle status.
+        This method checks for idle expand processes and threads that have not been active for a specified timeout period. If any idle processes or threads exceed this timeout, they are stopped and removed from the management pools.
+
+        Steps:
+        1. Check if the core process count is greater than zero:
+           - Retrieve the list of currently active expand processes.
+           - Identify idle processes (those with a task count of 0).
+           - Determine which of these idle processes have exceeded the configured shrinkage timeout.
+           - Stop and remove any eligible idle processes from both the expand process pool and the synchronization manager's status pool.
+
+        2. Retrieve the list of currently active expand threads:
+           - Identify idle threads in the same manner as processes.
+           - Determine which of these idle threads have exceeded the configured shrinkage timeout.
+           - Stop and remove any eligible idle threads from the expand thread pool and the synchronization manager's status pool.
 
         Notes:
-            - This method helps manage resources effectively by closing idle processes and threads, thereby freeing up system resources.
-            - Logging is utilized to track which processes and threads are closed due to being idle.
+        - This method helps manage system resources effectively by freeing up resources tied to inactive processes and threads.
+        - The shrinkage policy helps maintain an efficient and responsive system by ensuring that resources are not held unnecessarily.
         """
 
         global _ExpandProcessPool, _ExpandThreadPool, _ExpandProcessSurvivalTime, _ExpandThreadSurvivalTime
         if self.ConfigManager.CoreProcessCount.value != 0:
             expand_process_obj = [obj for i, obj in _ExpandProcessPool.items()]
             idle_process = [obj for obj in expand_process_obj if self.SynchronizationManager.ExpandProcessStatusPool[obj.ProcessName][1] == 0]
-            allow_close_process = [obj for obj in idle_process if (time.time() - _ExpandProcessSurvivalTime[obj.ProcessName]) >= self.ConfigManager.ShrinkagePolicyTimeout.value]
-            if idle_process:
-                for obj in idle_process:
-                    if obj in allow_close_process:
-                        obj.stop()
-                        del _ExpandProcessPool[obj.ProcessName]
-                        del self.SynchronizationManager.ExpandProcessStatusPool[obj.ProcessName]
-                        del _ExpandProcessSurvivalTime[obj.ProcessName]
-                        self.Logger.debug(f"Process {obj.ProcessName} has been closed due to idle status.")
+            allow_close_processes = [obj for obj in idle_process if (time.time() - _ExpandProcessSurvivalTime[obj.ProcessName]) >= self.ConfigManager.ShrinkagePolicyTimeout.value]
+            if allow_close_processes:
+                for obj in allow_close_processes:
+                    obj.stop()
+                    del _ExpandProcessPool[obj.ProcessName]
+                    del self.SynchronizationManager.ExpandProcessStatusPool[obj.ProcessName]
+                    del _ExpandProcessSurvivalTime[obj.ProcessName]
+                    self.Logger.debug(f"{obj.ProcessName} has been closed due to idle status.")
 
         expand_thread_obj = [obj for i, obj in _ExpandThreadPool.items()]
         idle_thread = [obj for obj in expand_thread_obj if self.SynchronizationManager.ExpandThreadStatusPool[obj.ThreadName][1] == 0]
-        allow_close_thread = [obj for obj in idle_thread if (time.time() - _ExpandThreadSurvivalTime[obj.ThreadName]) >= self.ConfigManager.ShrinkagePolicyTimeout.value]
-        if idle_thread:
-            for obj in idle_thread:
-                if obj in allow_close_thread:
-                    obj.stop()
-                    del _ExpandThreadPool[obj.ThreadName]
-                    del self.SynchronizationManager.ExpandThreadStatusPool[obj.ThreadName]
-                    del _ExpandThreadSurvivalTime[obj.ThreadName]
-                    self.Logger.debug(f"Thread {obj.ThreadName} has been closed due to idle status.")
+        allow_close_threads = [obj for obj in idle_thread if (time.time() - _ExpandThreadSurvivalTime[obj.ThreadName]) >= self.ConfigManager.ShrinkagePolicyTimeout.value]
+        if allow_close_threads:
+            for obj in allow_close_threads:
+                obj.stop()
+                del _ExpandThreadPool[obj.ThreadName]
+                del self.SynchronizationManager.ExpandThreadStatusPool[obj.ThreadName]
+                del _ExpandThreadSurvivalTime[obj.ThreadName]
+                self.Logger.debug(f"{obj.ThreadName} has been closed due to idle status.")
 
     def _timeoutShrink(self):
         """
-        Checks for and closes any expanded processes or threads that have exceeded their survival timeout.
+        Handles the shrinking of expand processes and threads based on a timeout policy.
 
-        steps:
-            1. If the core process count is greater than zero:
-                - Identify expanded processes that have exceeded their survival time based on the configured timeout.
-                - For each expanded process that has timed out:
-                    - Stop the process and remove it from the expand process pool.
-                    - Remove the corresponding entry from the expand process status pool and survival time tracking.
-                    - Log the closure of the process due to timeout.
-            2. Identify expanded threads that have exceeded their survival time based on the configured timeout.
-            3. For each expanded thread that has timed out:
-                - Stop the thread and remove it from the expand thread pool.
-                - Remove the corresponding entry from the expand thread status pool and survival time tracking.
-                - Log the closure of the thread due to timeout.
+        This method checks for expand processes and threads that have exceeded the configured shrinkage timeout. If any of these processes or threads have been inactive for too long, they are stopped and removed from the respective management pools.
+
+        Steps:
+        1. Check if the core process count is greater than zero:
+           - Identify expand processes that have exceeded the configured shrinkage timeout.
+           - If any processes meet this criteria, stop each one and remove it from:
+             - The expand process pool.
+             - The synchronization manager's status pool.
+             - The survival time dictionary.
+
+        2. Identify expand threads that have also exceeded the shrinkage timeout.
+           - If any threads meet this criteria, stop each one and remove it from:
+             - The expand thread pool.
+             - The synchronization manager's status pool.
+             - The survival time dictionary.
 
         Notes:
-            - This method is used to ensure that resources are freed by closing processes and threads that are no longer needed.
-            - Logging is used to keep track of which processes and threads are closed due to timeout.
+        - This method is essential for managing system resources efficiently by releasing resources held by inactive processes and threads.
+        - It ensures that the system does not retain unnecessary overhead from processes or threads that are no longer needed.
         """
 
         global _ExpandProcessPool, _ExpandThreadPool, _ExpandProcessSurvivalTime, _ExpandThreadSurvivalTime
@@ -4080,7 +4153,7 @@ class _LoadBalancer(threading.Thread):
                     del _ExpandProcessPool[obj]
                     del self.SynchronizationManager.ExpandProcessStatusPool[obj]
                     del _ExpandProcessSurvivalTime[obj]
-                    self.Logger.debug(f"Process {obj} has been closed due to timeout.")
+                    self.Logger.debug(f"{obj} has been closed due to timeout.")
 
         expand_thread_obj = [obj for obj, survival_time in _ExpandThreadSurvivalTime.items() if (time.time() - survival_time) >= self.ConfigManager.ShrinkagePolicyTimeout.value]
         if expand_thread_obj:
@@ -4089,7 +4162,7 @@ class _LoadBalancer(threading.Thread):
                 del _ExpandThreadPool[obj]
                 del self.SynchronizationManager.ExpandThreadStatusPool[obj]
                 del _ExpandThreadSurvivalTime[obj]
-                self.Logger.debug(f"Thread {obj} has been closed due to timeout.")
+                self.Logger.debug(f"{obj} has been closed due to timeout.")
 
 
 class _ProcessTaskScheduler(threading.Thread):
@@ -4106,7 +4179,7 @@ class _ProcessTaskScheduler(threading.Thread):
         LastSelectedProcess: The last process that was assigned a task.
         CloseEvent: Event to signal the scheduler to stop.
         NewTaskEvent: Event to indicate that new tasks are available.
-        sleep_time: Time to sleep when no tasks are available.
+        SleepTime: Time to sleep when no tasks are available.
 
     Methods:
         run: Continuously checks for new tasks and schedules them.
@@ -4128,9 +4201,10 @@ class _ProcessTaskScheduler(threading.Thread):
         self.ProcessTaskStorageQueue = ProcessTaskStorageQueue
         self.Logger = Logger
         self.LastSelectedProcess = None
+        self.BufferCount = 0
         self.CloseEvent = multiprocessing.Event()
         self.NewTaskEvent = threading.Event()
-        self.sleep_time = 0.001
+        self.SleepTime = 0.001
 
     def run(self):
         """
@@ -4159,8 +4233,8 @@ class _ProcessTaskScheduler(threading.Thread):
                 task_data = self.ProcessTaskStorageQueue.get_nowait()
             except queue.Empty:
                 if not self.NewTaskEvent.is_set():
-                    time.sleep(self.sleep_time)
-                self.NewTaskEvent.wait(timeout=0.1)
+                    time.sleep(self.SleepTime)
+                self.NewTaskEvent.wait(timeout=0.001)
                 self.NewTaskEvent.clear()
             if task_data:
                 priority, task_object = task_data
@@ -4188,36 +4262,31 @@ class _ProcessTaskScheduler(threading.Thread):
 
     def _scheduler(self, priority: int, task_object: _TaskObject):
         """
-        Schedules a process task by adding it to an appropriate process based on their availability and load.
+        Schedules a task object to be executed based on its priority and the status of available processes.
 
-        :param priority: The priority of the task to be scheduled.
-        :param task_object: The task object representing the task to be executed.
+        This method attempts to find an appropriate process to handle the given task object. It considers both core and expand processes to determine where the task can be assigned based on their current workload and availability.
 
-        steps:
-            1. Check for non-working core processes.
-            2. Check for non-full core processes.
-            3. If there are non-working core processes:
-                - Select the core process with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the process is now working.
-                - Return from the method.
-            4. If there are no non-working processes but there are non-full core processes:
-                - Select the core process with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the process is now working.
-                - Return from the method.
-            5. If the core process pool is not empty, check for non-working and non-full expand processes.
-            6. If there are non-working expand processes:
-                - Select the expand process with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the process is now working.
-                - Return from the method.
-            7. If there are no non-working processes but there are non-full expand processes:
-                - Select the expand process with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the process is now working.
-                - Return from the method.
-            8. If no suitable processes are found, put the task in the process task storage queue.
+        Steps:
+        1. Check for non-working core processes and not-full core processes:
+           - If any non-working core processes are found, assign the task to one of them, set its working event, and update the process status.
+           - If no non-working core processes are available, find the minimum load core process that can take on the task, and assign the task to it.
+
+        2. If no suitable core processes are found, check for available expand processes:
+           - Assign the task to a non-working expand process if available, setting its working event and updating the process status.
+           - If no non-working expand processes are found, find the minimum load expand process and assign the task to it.
+
+        3. If there are no available processes in either category, enqueue the task in the process task storage queue for later execution.
 
         Notes:
-            - This method prioritizes assigning tasks to processes that are either not working or not full to maintain optimal system performance.
-            - The task will be queued if no processes are available to handle it immediately.
+        - This method updates the status of processes in the SynchronizationManager, reflecting the current task assignment and workload.
+        - The priority of the task is taken into account when determining the appropriate process for execution.
+
+        Parameters:
+            - priority (int): The priority level of the task being scheduled.
+            - task_object (_TaskObject): The task object containing the details of the task to be executed.
+
+        Returns:
+            - None
         """
 
         global _ExpandProcessPool
@@ -4225,28 +4294,40 @@ class _ProcessTaskScheduler(threading.Thread):
         not_full_core_processes = self._checkNotFullProcess("Core")
 
         if not_working_core_processes:
-            minimum_load_core_process = self._checkMinimumLoadProcess(not_working_core_processes, "Core")
-            minimum_load_core_process.addProcessTask(priority, task_object)
-            minimum_load_core_process.WorkingEvent.set()
-            return
+            for i in not_working_core_processes:
+                i.addProcessTask(priority, task_object)
+                i.WorkingEvent.set()
+                current_status = self.SynchronizationManager.CoreProcessStatusPool[i.ProcessName]
+                current_status[1] += 1
+                self.SynchronizationManager.CoreProcessStatusPool[i.ProcessName] = current_status
+                return
         if not_full_core_processes:
             minimum_load_core_process = self._checkMinimumLoadProcess(not_full_core_processes, "Core")
             minimum_load_core_process.addProcessTask(priority, task_object)
             minimum_load_core_process.WorkingEvent.set()
+            current_status = self.SynchronizationManager.CoreProcessStatusPool[minimum_load_core_process.ProcessName]
+            current_status[1] += 1
+            self.SynchronizationManager.CoreProcessStatusPool[minimum_load_core_process.ProcessName] = current_status
             return
         if _ExpandProcessPool:
             not_working_expand_processes = self._checkNotWorkingProcess("Expand")
             not_full_expand_processes = self._checkNotFullProcess("Expand")
 
             if not_working_expand_processes:
-                minimum_load_expand_process = self._checkMinimumLoadProcess(not_working_expand_processes, "Expand")
-                minimum_load_expand_process.addProcessTask(priority, task_object)
-                minimum_load_expand_process.WorkingEvent.set()
-                return
+                for i in not_working_expand_processes:
+                    i.addProcessTask(priority, task_object)
+                    i.WorkingEvent.set()
+                    current_status = self.SynchronizationManager.ExpandProcessStatusPool[i.ProcessName]
+                    current_status[1] += 1
+                    self.SynchronizationManager.ExpandProcessStatusPool[i.ProcessName] = current_status
+                    return
             if not_full_expand_processes:
                 minimum_load_expand_process = self._checkMinimumLoadProcess(not_full_expand_processes, "Expand")
                 minimum_load_expand_process.addProcessTask(priority, task_object)
                 minimum_load_expand_process.WorkingEvent.set()
+                current_status = self.SynchronizationManager.ExpandProcessStatusPool[minimum_load_expand_process.ProcessName]
+                current_status[1] += 1
+                self.SynchronizationManager.ExpandProcessStatusPool[minimum_load_expand_process.ProcessName] = current_status
                 return
             self.ProcessTaskStorageQueue.put_nowait((priority, task_object))
             return
@@ -4254,27 +4335,27 @@ class _ProcessTaskScheduler(threading.Thread):
 
     def _checkNotFullProcess(self, process_type: Literal["Core", "Expand"]) -> list:
         """
-        Checks for processes that are not currently full based on their load.
+        Checks for processes that are not currently full and can accept additional tasks.
 
-        :param process_type: The type of processes to check, either "Core" or "Expand".
+        This method iterates through the specified pool of processes (either core or expand) to identify those that have not yet reached their task capacity based on the configured task threshold.
 
-        :return: A list of process objects that are not full.
+        Steps:
+        1. Determine the relevant process pool and status pool based on the `process_type` argument.
+        2. Create a list of processes that are not full:
+           - A process is considered not full if the number of tasks it is currently handling (as indicated in the status pool) is less than the task threshold defined in the configuration manager.
+        3. Return the list of processes that are not full.
 
-        steps:
-            1. Determine the appropriate process pool to use based on the process type.
-            2. Determine the corresponding status pool for monitoring process loads.
-            3. Iterate through the selected process pool and collect processes where the current load is less than the task threshold.
-            4. Return the list of processes that are not full.
+        Parameters:
+            - process_type (Literal["Core", "Expand"]): The type of processes to check, either "Core" or "Expand".
 
-        Notes:
-            - This method is useful for load balancing by identifying processes that can accept more tasks.
-            - The task threshold is used to determine when a process is considered full.
+        Returns:
+            - list: A list of processes that are not full and can accept more tasks.
         """
 
         global _CoreProcessPool, _ExpandProcessPool
         obj_pool = _CoreProcessPool if process_type == "Core" else _ExpandProcessPool
         status_pool = self.SynchronizationManager.CoreProcessStatusPool if process_type == "Core" else self.SynchronizationManager.ExpandProcessStatusPool
-        not_full_processes = [obj for index, obj in obj_pool.items() if status_pool[obj.ProcessName][1] < self.ConfigManager.TaskThreshold.value]
+        not_full_processes = [obj for index, obj in list(obj_pool.items()) if status_pool[obj.ProcessName][1] < self.ConfigManager.TaskThreshold.value]
         return not_full_processes
 
     @staticmethod
@@ -4303,23 +4384,24 @@ class _ProcessTaskScheduler(threading.Thread):
 
     def _checkMinimumLoadProcess(self, processes: list, process_type: Literal["Core", "Expand"]) -> _ProcessObject:
         """
-        Checks and selects a process with the minimum load from the provided list of processes.
+        Selects the process with the minimum load from a list of available processes.
 
-        :param processes: A list of process objects to evaluate.
-        :param process_type: The type of processes to check, either "Core" or "Expand".
+        This method checks the load status of processes of the specified type (Core or Expand) and selects the one with the lowest task count. It also manages the state of `LastSelectedProcess` to avoid selecting the same process consecutively.
 
-        :return: The selected process object with the minimum load.
+        Steps:
+        1. Determine the status pool based on the specified `process_type` (either Core or Expand).
+        2. Filter the list of available processes to exclude the last selected process, if applicable.
+        3. If no processes are available, select the first process from the original list.
+        4. Otherwise, find and select the process with the minimum task count from the available processes.
+        5. Update `LastSelectedProcess` to the selected process.
+        6. Return the selected process.
 
-        steps:
-            1. Determine the status pool to use based on the process type.
-            2. Create a list of available processes, excluding the last selected process if it exists.
-            3. If there are no available processes, select the first process from the original list.
-            4. If there are available processes, select the one with the minimum load from the status pool.
-            5. Update the last selected process reference.
+        Parameters:
+            - processes (list): A list of process objects to evaluate.
+            - process_type (Literal["Core", "Expand"]): Specifies the type of processes being evaluated.
 
-        Notes:
-            - This method is used to ensure that process selection is balanced based on load.
-            - The minimum load is determined using the third value in the process's status, which represents the load.
+        Returns:
+            - _ProcessObject: The process object with the minimum load.
         """
 
         status_pool = self.SynchronizationManager.CoreProcessStatusPool if process_type == "Core" else self.SynchronizationManager.ExpandProcessStatusPool
@@ -4327,7 +4409,7 @@ class _ProcessTaskScheduler(threading.Thread):
         if not available_processes:
             selected_process = processes[0]
         else:
-            selected_process = min(available_processes, key=lambda x: status_pool[x.ProcessName][2])
+            selected_process = min(available_processes, key=lambda x: status_pool[x.ProcessName][1])
         self.LastSelectedProcess = selected_process
         return selected_process
 
@@ -4428,36 +4510,24 @@ class _ThreadTaskScheduler(threading.Thread):
 
     def _scheduler(self, priority: int, task_object: _TaskObject):
         """
-        Schedules a thread task by adding it to an appropriate thread based on their availability and load.
+        Schedules a task to a thread based on its priority and the current load of available threads.
 
-        :param priority: The priority of the task to be scheduled.
-        :param task_object: The task object representing the task to be executed.
+        This method manages the distribution of tasks among core and expand threads. It first checks for any non-working threads and if there are available threads with space for more tasks. If found, it assigns the task to the most suitable thread based on the current load.
 
-        steps:
-            1. Check for non-working core threads.
-            2. Check for non-full core threads.
-            3. If there are non-working core threads:
-                - Select the core thread with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the thread is now working.
-                - Return from the method.
-            4. If there are no non-working threads but there are non-full core threads:
-                - Select the core thread with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the thread is now working.
-                - Return from the method.
-            5. If the core thread pool is not empty, check for non-working and non-full expand threads.
-            6. If there are non-working expand threads:
-                - Select the expand thread with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the thread is now working.
-                - Return from the method.
-            7. If there are no non-working threads but there are non-full expand threads:
-                - Select the expand thread with the minimum load and assign the task to it.
-                - Set the WorkingEvent to indicate the thread is now working.
-                - Return from the method.
-            8. If no suitable threads are found, put the task in the thread task storage queue.
+        Steps:
+        1. Check for non-working core threads using `_checkNonWorkingThread`.
+        2. Check for core threads that are not at full capacity using `_checkNonFullThread`.
+        3. If there are non-working core threads, assign the task to one of them, update their status, and exit the method.
+        4. If there are no non-working threads but some that are not full, find the thread with the minimum load using `_checkMinimumLoadThread`, assign the task, and update its status.
+        5. If there are expand threads available, check for non-working and non-full expand threads similarly, assigning the task as appropriate.
+        6. If no threads are available, queue the task in the `ThreadTaskStorageQueue`.
 
-        Notes:
-            - This method prioritizes assigning tasks to threads that are either not working or not full to maintain optimal system performance.
-            - The task will be queued if no threads are available to handle it immediately.
+        Parameters:
+            - priority (int): The priority of the task being scheduled.
+            - task_object (_TaskObject): The task object containing the task details.
+
+        Returns:
+            None
         """
 
         global _ExpandThreadPool
@@ -4465,28 +4535,40 @@ class _ThreadTaskScheduler(threading.Thread):
         not_full_core_threads = self._checkNonFullThread("Core")
 
         if not_working_core_threads:
-            minimum_load_core_thread = self._checkMinimumLoadThread(not_working_core_threads, "Core")
-            minimum_load_core_thread.addThreadTask(priority, task_object)
-            minimum_load_core_thread.WorkingEvent.set()
-            return
+            for i in not_working_core_threads:
+                i.addThreadTask(priority, task_object)
+                i.WorkingEvent.set()
+                current_status = self.SynchronizationManager.CoreThreadStatusPool[i.ThreadName]
+                current_status[1] += 1
+                self.SynchronizationManager.CoreThreadStatusPool[i.ThreadName] = current_status
+                return
         if not_full_core_threads:
-            minimum_load_core_thread = self._checkMinimumLoadThread(not_full_core_threads, "Core")
-            minimum_load_core_thread.addThreadTask(priority, task_object)
-            minimum_load_core_thread.WorkingEvent.set()
+            minimum_load_core_process = self._checkMinimumLoadThread(not_full_core_threads, "Core")
+            minimum_load_core_process.addThreadTask(priority, task_object)
+            minimum_load_core_process.WorkingEvent.set()
+            current_status = self.SynchronizationManager.CoreThreadStatusPool[minimum_load_core_process.ThreadName]
+            current_status[1] += 1
+            self.SynchronizationManager.CoreThreadStatusPool[minimum_load_core_process.ThreadName] = current_status
             return
         if _ExpandThreadPool:
             not_working_expand_threads = self._checkNonWorkingThread("Expand")
             not_full_expand_threads = self._checkNonFullThread("Expand")
 
             if not_working_expand_threads:
-                minimum_load_expand_thread = self._checkMinimumLoadThread(not_working_expand_threads, "Expand")
-                minimum_load_expand_thread.addThreadTask(priority, task_object)
-                minimum_load_expand_thread.WorkingEvent.set()
-                return
+                for i in not_working_expand_threads:
+                    i.addThreadTask(priority, task_object)
+                    i.WorkingEvent.set()
+                    current_status = self.SynchronizationManager.ExpandThreadStatusPool[i.ThreadName]
+                    current_status[1] += 1
+                    self.SynchronizationManager.ExpandThreadStatusPool[i.ThreadName] = current_status
+                    return
             if not_full_expand_threads:
-                minimum_load_expand_thread = self._checkMinimumLoadThread(not_full_expand_threads, "Expand")
-                minimum_load_expand_thread.addThreadTask(priority, task_object)
-                minimum_load_expand_thread.WorkingEvent.set()
+                minimum_load_expand_process = self._checkMinimumLoadThread(not_full_core_threads, "Expand")
+                minimum_load_expand_process.addThreadTask(priority, task_object)
+                minimum_load_expand_process.WorkingEvent.set()
+                current_status = self.SynchronizationManager.ExpandThreadStatusPool[minimum_load_expand_process.ThreadName]
+                current_status[1] += 1
+                self.SynchronizationManager.ExpandThreadStatusPool[minimum_load_expand_process.ThreadName] = current_status
                 return
             self.ThreadTaskStorageQueue.put_nowait((priority, task_object))
             return
@@ -5150,26 +5232,33 @@ class ConcurrentSystem:
 
     def _initSystem(self):
         """
-        Initializes the system by starting the specified number of core processes and threads.
+        Initializes the core processes and threads for the concurrent system.
 
-        steps:
-            1. Initialize empty futures list to track process and thread startup.
-            2. Start core processes based on the configured count:
-                - For each process, generate a unique process name and submit the start task to the executor.
-            3. Start core threads based on the configured count:
-                - For each thread, generate a unique thread name and submit the start task to the executor.
-            4. Wait for all submitted tasks (processes and threads) to complete.
-            5. Start the load balancer.
-            6. If the core process count is greater than zero, start the process task scheduler.
-            7. Start the thread task scheduler.
-            8. Start the callback executor.
+        This method sets up the system by starting the specified number of core processes and threads based on the configuration settings. It also initializes the load balancer and task schedulers.
+
+        Steps:
+        1. Set the priority for the main process using the `_setMainProcessPriority` method.
+        2. Initialize a list to store future objects for the asynchronous execution of process and thread creation.
+        3. Start core processes:
+           - Loop through the range of the configured core process count.
+           - For each process, generate a unique name and submit the `_startCoreProcess` method to the system thread pool executor.
+           - Collect all future objects in the `futures` list.
+        4. Start core threads:
+           - Loop through the range of the configured core thread count.
+           - For each thread, generate a unique name and submit the `_startCoreThread` method to the system thread pool executor.
+           - Collect all future objects in the `futures` list.
+        5. Wait for all the process and thread futures to complete by calling `future.result()` for each.
+        6. Start the load balancer.
+        7. If the core process count is greater than zero, start the process task scheduler.
+        8. Start the thread task scheduler and the callback executor.
 
         Notes:
-            - Ensure that the core process and thread counts are configured properly to avoid resource issues.
-            - The system will only start the process task scheduler if there are processes to manage.
+        - This method is essential for setting up the concurrent system to begin handling tasks effectively.
+        - Proper initialization ensures that resources are allocated efficiently and that the system is ready for task processing.
         """
 
         global _CoreProcessPool, _CoreThreadPool
+        self._setMainProcessPriority()
         futures = []
         for i in range(self._ConfigManager.CoreProcessCount.value):
             process_name = f"Process-{i}"
@@ -5186,6 +5275,30 @@ class ConcurrentSystem:
             self._ProcessTaskScheduler.start()
         self._ThreadTaskScheduler.start()
         self._CallbackExecutor.startExecutor()
+
+    def _setMainProcessPriority(self):
+        priority_mapping = {
+            "IDLE": 0x00000040,
+            "BELOW_NORMAL": 0x00004000,
+            "NORMAL": 0x00000020,
+            "ABOVE_NORMAL": 0x00008000,
+            "HIGH": 0x00000080,
+            "REALTIME": 0x00000100
+        }
+        handle = None
+        try:
+            handle = ctypes.windll.kernel32.OpenProcess(0x1F0FFF, False, os.getpid())
+            if handle == 0:
+                raise ValueError("Failed to obtain a valid handle")
+            result = ctypes.windll.kernel32.SetPriorityClass(handle, priority_mapping.get(self._ConfigManager.ProcessPriority, priority_mapping["NORMAL"]))
+            if result == 0:
+                error_code = ctypes.windll.kernel32.GetLastError()
+                raise Exception(f"Set priority failed with error code {error_code}.")
+        except Exception as e:
+            self._Logger.error(f"[MainProcess - {os.getpid()}] set priority failed due to {str(e)}")
+        finally:
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
 
     def _startCoreProcess(self, process_name):
         """
@@ -5207,10 +5320,10 @@ class ConcurrentSystem:
         """
 
         global _CoreProcessPool
-        process_object = _ProcessObject(process_name, "Core", self._SynchronizationManager, self._ConfigManager, self._DebugMode)
+        process_object: _ProcessObject = _ProcessObject(process_name, "Core", self._SynchronizationManager, self._ConfigManager, self._DebugMode)
         process_object.start()
         _CoreProcessPool[process_name] = process_object
-        self._SynchronizationManager.CoreProcessStatusPool[process_name] = (process_object.pid, 0, 0)
+        self._SynchronizationManager.CoreProcessStatusPool[process_name] = [process_object.pid, 0, 0]
         return process_object
 
     def _startCoreThread(self, thread_name):
@@ -5236,7 +5349,7 @@ class ConcurrentSystem:
         thread_object = _ThreadObject(thread_name, "Core", self._SynchronizationManager, self._ConfigManager, self._Logger)
         thread_object.start()
         _CoreThreadPool[thread_name] = thread_object
-        self._SynchronizationManager.CoreThreadStatusPool[thread_name] = (thread_object.ident, 0)
+        self._SynchronizationManager.CoreThreadStatusPool[thread_name] = [thread_object.ident, 0]
         return thread_object
 
 
@@ -5249,6 +5362,7 @@ def ConnectConcurrentSystem(**kwargs) -> ConcurrentSystem:
 
     :param kwargs: Keyword arguments for configuring the ConcurrentSystem. Available options include:
         - DebugMode: A boolean indicating if the system should run in debug mode (default is determined by the environment).
+        - Priority: The priority of the main process (default is "NORMAL").
         - CoreProcessCount: The number of core processes to be initialized.
         - CoreThreadCount: The number of core threads to be initialized.
         - MaximumProcessCount: The maximum number of processes allowed.
@@ -5275,7 +5389,7 @@ def ConnectConcurrentSystem(**kwargs) -> ConcurrentSystem:
         6. Create a synchronization manager using the shared object manager.
         7. Create a configuration manager using the shared object manager and the configuration.
         8. Instantiate the ConcurrentSystem with the synchronization manager, configuration manager, and debug mode.
-        9. Show the logo of ConcurrentSystem.
+        9. Show the banner of ConcurrentSystem.
         10. Return the initialized ConcurrentSystem instance.
 
     Notes:
@@ -5296,6 +5410,7 @@ def ConnectConcurrentSystem(**kwargs) -> ConcurrentSystem:
         _MainEventLoop = asyncio.get_event_loop()
     # noinspection PyTypeChecker
     _config = _ConcurrentSystemConfig(
+        Priority=kwargs.get('Priority', "NORMAL"),
         CoreProcessCount=kwargs.get('CoreProcessCount', None),
         CoreThreadCount=kwargs.get('CoreThreadCount', None),
         MaximumProcessCount=kwargs.get('MaximumProcessCount', None),
@@ -5312,12 +5427,5 @@ def ConnectConcurrentSystem(**kwargs) -> ConcurrentSystem:
     _synchronization_manager = _SynchronizationManager(_shared_object_manager)
     _config_manager = _ConfigManager(_shared_object_manager, _config)
     _concurrent_system = ConcurrentSystem(_synchronization_manager, _config_manager, _debug_mode)
-    CYAN_BOLD = "\033[1m\033[36m"
-    RESET = "\033[0m"
-    print(CYAN_BOLD + "   ______                                                               __    _____                    __                   ")
-    print(CYAN_BOLD + "  / ____/  ____    ____   _____  __  __   _____   _____  ___    ____   / /_  / ___/   __  __   _____  / /_  ___    ____ ___ ")
-    print(CYAN_BOLD + " / /      / __ \\  / __ \\ / ___/ / / / /  / ___/  / ___/ / _ \\  / __ \\ / __/  \\__ \\   / / / /  / ___/ / __/ / _ \\  / __ `__ \\")
-    print(CYAN_BOLD + "/ /___   / /_/ / / / / // /__  / /_/ /  / /     / /    /  __/ / / / // /_   ___/ /  / /_/ /  (__  ) / /_  /  __/ / / / / / /")
-    print(CYAN_BOLD + "\\____/   \\____/ /_/ /_/ \\___/  \\__,_/  /_/     /_/     \\___/ /_/ /_/ \\__/  /____/   \\__, /  /____/  \\__/  \\___/ /_/ /_/ /_/ ")
-    print(CYAN_BOLD + "                                                                                   /____/                                  " + RESET)
+    _showBanner()
     return _concurrent_system

@@ -139,12 +139,11 @@ class View(QWidget):
         1. 提交任务时请确保被提交的任务可以被序列化，否则该任务将会被直接抛弃，回调函数因为是在主进程执行，所以不受此限制
         2. 同时指定 callback 和 future 参数时，callback 参数指定的回调函数会被优先执行，而 future.result() 则是在其之后执行
         """
-        for i in range(1):
+        for i in range(2):
             start_time = time.time()
             ConcurrentSystem.submitSystemThreadTask(
                 ConcurrentSystem.submitProcessTask, 100, self.process_test_function, callback=self.process_test_callback, start_time=start_time
             )
-            await asyncio.sleep(1)
 
     @asyncSlot()
     async def _start_thread_test(self):
@@ -215,12 +214,11 @@ class View(QWidget):
                 result = i.result().result()
                 self.thread_test_callback(result)
         """
-        for i in range(1):
+        for i in range(2):
             start_time = time.time()
             ConcurrentSystem.submitSystemThreadTask(
                 ConcurrentSystem.submitThreadTask, 100, self.thread_test_function, callback=self.thread_test_callback, start_time=start_time
             )
-            await asyncio.sleep(1)
 
     @staticmethod
     async def process_test_function(start_time: float):
@@ -267,7 +265,7 @@ class View(QWidget):
 
 if __name__ == "__main__":
     qt = QApplication(sys.argv)
-    ConnectConcurrentSystem(CoreProcessCount=16, CoreThreadCount=16)
+    ConnectConcurrentSystem(Priority="HIGH", CoreProcessCount=4, MaximumProcessCount=16, CoreThreadCount=16, MaximumThreadCount=16, ExpandPolicy="AutoExpand", ShrinkagePolicy="AutoShrink")
     v = View()
     v.show()
     ConcurrentSystem.MainEventLoop.run_forever()
