@@ -6,8 +6,8 @@ Copyright (c) 2024 疾风Kirito <1453882193@qq.com>
 All rights reserved.
 
 Author: 疾风Kirito
-Version: 1.0.0
-Date: 2024-09-27
+Version: 1.0.1
+Date: 2024-10-02
 
 Description:
     TheSeedCore ConcurrentSystem is an advanced, high-performance framework designed for concurrent task execution in environments that demand high throughput, low latency, and efficient resource management.
@@ -129,8 +129,8 @@ SOFTWARE.
 from __future__ import annotations
 
 __author__ = "疾风Kirito"
-__version__ = "1.0.0"
-__date__ = "2024-09-27"
+__version__ = "1.0.1"
+__date__ = "2024-10-02"
 __all__ = [
     "ConcurrentSystem",
     "TaskFuture",
@@ -4862,6 +4862,7 @@ class ConcurrentSystem:
         self._ProcessTaskStorageQueue: multiprocessing.Queue = multiprocessing.Queue()
         self._ThreadTaskStorageQueue: queue.Queue = queue.Queue()
         self._Logger = self._setLogger()
+        self._QtMode = False
         self._LoadBalancer = _LoadBalancer(self._SynchronizationManager, self._ConfigManager, self._Logger, self._DebugMode)
         self._ProcessTaskScheduler = _ProcessTaskScheduler(self._SynchronizationManager, self._ConfigManager, self._ProcessTaskStorageQueue, self._Logger)
         self._ThreadTaskScheduler = _ThreadTaskScheduler(self._SynchronizationManager, self._ConfigManager, self._ThreadTaskStorageQueue, self._Logger)
@@ -5171,6 +5172,8 @@ class ConcurrentSystem:
         cls._INSTANCE._SystemThreadPoolExecutor.shutdown(wait=True, cancel_futures=True)
         if cls._INSTANCE._ConfigManager.CoreProcessCount.value != 0:
             cls._INSTANCE._SystemProcessPoolExecutor.shutdown(wait=True, cancel_futures=True)
+        if not cls._INSTANCE._QtMode:
+            cls.MainEventLoop.stop()
         del cls._INSTANCE
 
     def _setLogger(self) -> logging.Logger:
@@ -5227,7 +5230,9 @@ class ConcurrentSystem:
 
         # noinspection PyUnresolvedReferences
         if QApplication and QApplication.instance():
+            self._QtMode = True
             return _QtCallbackExecutor(self._SynchronizationManager)
+        self._QtMode = False
         return _CoreCallbackExecutor(self._SynchronizationManager)
 
     def _initSystem(self):
